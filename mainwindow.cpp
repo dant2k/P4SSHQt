@@ -7,6 +7,147 @@
 #include "qhash.h"
 #include "qmenu.h"
 
+
+SSHTunnel::SSHTunnel() : P(this)
+{
+    connect(&P, &QProcess::readyReadStandardError, this, &SSHTunnel::echo_err);
+    connect(&P, &QProcess::readyReadStandardOutput, this, &SSHTunnel::echo_std);
+    connect(&P, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &SSHTunnel::tunnel_closed);
+}
+
+void SSHTunnel::tunnel_closed(int, QProcess::ExitStatus)
+{
+    qDebug() << "SSL Tunnel Closed";
+}
+
+void SSHTunnel::run_ssh()
+{
+    QStringList list;
+    list << "-N" << "-L" << "1234:localhost:1666" << "-i" << TunnelKey << TunnelUser << "@" << TunnelServer;
+
+    qDebug() << "Running SSH";
+
+    P.start("ssh", list);
+    P.waitForStarted();
+
+    // The tunnel is connecting in the background, however there's no signal
+    // for us to know once it's done connecting, so we just sleep 5 seconds.
+    qDebug() << "Waiting for connection...";
+    QThread::sleep(2);
+}
+
+void SSHTunnel::retrieve_files()
+{
+    // This tried to call p4 files to get all available files
+    // for retrieval, as well as the current client status.
+
+    // first we check if the connection is active. If it's failed,
+    // we try to reopen the tunnel.
+    if (P.processId() == 0)
+    {
+        // no active tunnel - try to connect
+        run_ssh();
+
+        if (P.processId() == 0)
+        {
+            // Couldn't get the tunnel to open
+            qDebug() << "Tunnel failed to open";
+            return;
+        }
+    }
+
+    // Got a valid SSH process - try to issue the p4 files
+    qDebug() << "Trying to P4";
+
+    QProcess files;
+
+    QStringList list;
+    list << "-s" << "-p" << "tcp:localhost:1234" << "-u" << PerforceUser << "files" << "//depot/...";
+
+    files.start("/usr/local/bin/p4", list);
+    files.waitForFinished();
+
+    QString p4_result = files.readAll();
+    QStringList p4_lines = p4_result.split(QRegExp("[\r\n]"),QString::SkipEmptyParts);
+
+    bool do_retry = false;
+
+    for (int i =0; i < p4_lines.count(); i++)
+    {
+        qDebug() << "p4> " << p4_lines.at(i);
+        if (p4_lines.at(i).startsWith("error:"))
+        {
+            if (p4_lines.at(i).contains("please login again") ||
+                p4_lines.at(i).contains("invalid or unset"))
+            {
+                qDebug() << "Issuing login";
+
+                //
+                // issue the login
+                //
+                QProcess login;
+                connect(&login, &QProcess::readyReadStandardError, this, &SSHTunnel::echo_err);
+                connect(&login, &QProcess::readyReadStandardOutput, this, &SSHTunnel::echo_std);
+
+                QStringList login_list;
+                login_list << "-s" << "-p" << "localhost:1234" << "-u" << PerforceUser << "login";
+                login.start("/usr/local/bin/p4", login_list);
+                login.waitForStarted();
+                login.waitForReadyRead();
+
+                QString login_results = login.readAll();
+                if (login_results.startsWith("Enter password:"))
+                {
+                    
+                }
+                else
+                    qDebug() << login_results;
+
+                login.waitForFinished(5000);
+                do_retry = true;
+                break;
+            }
+        }
+    }
+
+    if (do_retry == true && retrying == false)
+    {
+        retrying = true;
+        retrieve_files();
+        retrying = false;
+    }
+
+}
+
+void SSHTunnel::shutdown_tunnel()
+{
+    // This shutdowns the SSH tunnel if connected.
+    qDebug() << "Shutting down SSH...";
+    P.terminate();
+    P.waitForFinished();
+    qDebug() << "...Done";
+}
+
+void SSHTunnel::shutdown_fn()
+{
+    qDebug() << "Shutting Down";
+    P.terminate();
+    P.waitForFinished();
+    qDebug() << "Closed.";
+
+    thread()->quit();
+}
+
+void SSHTunnel::echo_err()
+{
+    qDebug() << "ssh err>" << QString(P.readAllStandardError());
+}
+
+void SSHTunnel::echo_std()
+{
+    qDebug() << "ssh out>" << QString(P.readAllStandardOutput());
+}
+
 void MainWindow::TestAction()
 {
 
@@ -44,6 +185,20 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+
+
+    qDebug() << "Creating SSH Tunnel";
+
+    Tunnel = new SSHTunnel();
+    Tunnel->moveToThread(&TunnelThread);
+
+    qDebug() << Tunnel->thread();
+    qDebug() << Tunnel->P.thread();
+
+    connect(&TunnelThread, &QThread::finished, Tunnel, &QObject::deleteLater);
+    //connect(this, &MainWindow::launch, Tunnel, &SSHTunnel::thread_fn);
+    TunnelThread.start();
+
 
     QVBoxLayout *mainLayout = new QVBoxLayout();
     mainLayout->addWidget(ui->splitter);
@@ -108,6 +263,29 @@ MainWindow::MainWindow(QWidget *parent) :
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+
+void MainWindow::closeEvent(QCloseEvent *)
+{
+    // This has to be here because on OSX we get this twice
+    // with a cmd-w
+    static bool already_closing = false;
+    if (already_closing)
+        return;
+
+    already_closing = true;
+    qDebug() << "closeEvent";
+
+    // shut down ssh
+    QMetaObject::invokeMethod(Tunnel, "shutdown_fn");
+
+    qDebug() << "sent shutdown, killing the thread";
+
+    // Kill the thread and wait
+    TunnelThread.wait();
+
+    qDebug() << "done";
 }
 
 // This is the SSH user to use for the tunnel.
