@@ -8,6 +8,8 @@
 #include "qmenu.h"
 #include "qsettings.h"
 #include "qinputdialog.h"
+#include "qfiledialog.h"
+
 
 // This is the SSH user to use for the tunnel.
 QString TunnelUser;
@@ -59,6 +61,22 @@ void SSHTunnel::run_ssh()
     // for us to know once it's done connecting, so we just sleep 5 seconds.
     qDebug() << "Waiting for connection...";
     QThread::sleep(2);
+}
+
+void SSHTunnel::download_file_to(QString depot_file, QString dest_dir)
+{
+    if (P.processId() == 0)
+        return;
+
+    QString output_file = dest_dir + depot_file.mid(depot_file.lastIndexOf('/'));
+
+    QProcess files;
+
+    QStringList list;
+    list << "-s" << "-p" << "tcp:localhost:1234" << "-u" << PerforceUser << "print" << "-o" << output_file << ("//depot/" + depot_file);
+
+    files.start(PerforcePath, list);
+    files.waitForFinished();
 }
 
 void SSHTunnel::retrieve_files()
@@ -321,6 +339,11 @@ void FileListThunk::update_file_list(void* new_file_list)
                 if (accumulator.size())
                     parent_parent = tree[accumulator];
                 parent = new QTreeWidgetItem(parent_parent, QStringList(sections[i]));
+                if (i == sections.length()-1)
+                {
+                    // this is the file level - set the file path in the data
+                    parent->setData(0, Qt::UserRole, file);
+                }
                 tree[current] = parent;
 
             }
@@ -368,4 +391,18 @@ void MainWindow::closeEvent(QCloseEvent *)
 void MainWindow::on_pushButton_clicked()
 {
     QMetaObject::invokeMethod(Tunnel, "retrieve_files");
+}
+
+void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int column)
+{
+    QString file_name = item->data(0, Qt::UserRole).toString();
+
+    if (file_name.length() == 0)
+        return; // not an actual file.
+
+    // got a file, ask where to put it.
+    QString save_to = QFileDialog::getExistingDirectory(this, "Save To..");
+
+    // send to the background thread to process.
+    QMetaObject::invokeMethod(Tunnel, "download_file_to", Q_ARG(QString, file_name), Q_ARG(QString, save_to));
 }
