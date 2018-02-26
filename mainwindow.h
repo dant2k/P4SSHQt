@@ -3,21 +3,44 @@
 
 #include <QMainWindow>
 #include <qprocess.h>
+#include <qthread.h>
+#include <qdebug.h>
 
 namespace Ui {
 class MainWindow;
 }
 
+// This class is because I can't convince invokeMethod to call directly
+// to mainwindow without crashing. So I do it to this object which lives
+// on the main thread, and it updates the UI accordingly.
+class FileListThunk : public QObject
+{
+    Q_OBJECT
+
+public:
+    FileListThunk(Ui::MainWindow* _main_window_ptr)
+    {
+        qDebug() << _main_window_ptr;
+        main_window_ptr = _main_window_ptr;
+    }
+
+private:
+    Ui::MainWindow* main_window_ptr;
+
+public slots:
+    void update_file_list(void* new_file_list);
+};
 
 class SSHTunnel : public QObject
 {
     Q_OBJECT
 
 public:
-    SSHTunnel();
+    SSHTunnel(FileListThunk* _thunk);
 
     QProcess P;
 private:
+    FileListThunk* thunk;
     bool retrying; // to prevent infinite recursion
     void run_ssh();
 
@@ -46,6 +69,7 @@ public:
 
 private:
     Ui::MainWindow *ui;
+    FileListThunk file_list_thunker;
 
     bool ConnectTunnel;
     SSHTunnel* Tunnel;

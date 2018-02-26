@@ -6,10 +6,35 @@
 #include "qdiriterator.h"
 #include "qhash.h"
 #include "qmenu.h"
+#include "qsettings.h"
+#include "qinputdialog.h"
 
+// This is the SSH user to use for the tunnel.
+QString TunnelUser;
 
-SSHTunnel::SSHTunnel() : P(this)
+// This is the server to connect to with SSH
+QString TunnelServer;
+
+// This is the certificate file (.ppk) to use to authenticate the user with SSH.
+QString TunnelKeyPathAndFile;
+
+// This is the path and filename of plink.exe (or ssh)
+QString PlinkPath;
+
+// This is the path and filename of p4.exe
+QString PerforcePath;
+
+// This is the perforce username (NOT the tunnel username!!)
+QString PerforceUser;
+
+// This is the password for _perforce_, not the tunnel key.
+// Not stored in
+QString PerforcePassword;
+
+SSHTunnel::SSHTunnel(FileListThunk* _thunk) : P(this), thunk(_thunk)
 {
+    retrying = false;
+
     connect(&P, &QProcess::readyReadStandardError, this, &SSHTunnel::echo_err);
     connect(&P, &QProcess::readyReadStandardOutput, this, &SSHTunnel::echo_std);
     connect(&P, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &SSHTunnel::tunnel_closed);
@@ -23,11 +48,11 @@ void SSHTunnel::tunnel_closed(int, QProcess::ExitStatus)
 void SSHTunnel::run_ssh()
 {
     QStringList list;
-    list << "-N" << "-L" << "1234:localhost:1666" << "-i" << TunnelKey << TunnelUser << "@" << TunnelServer;
+    list << "-N" << "-L" << "1234:localhost:1666" << "-i" << TunnelKeyPathAndFile << (TunnelUser + "@" + TunnelServer);
 
     qDebug() << "Running SSH";
 
-    P.start("ssh", list);
+    P.start(PlinkPath, list);
     P.waitForStarted();
 
     // The tunnel is connecting in the background, however there's no signal
@@ -64,21 +89,36 @@ void SSHTunnel::retrieve_files()
     QStringList list;
     list << "-s" << "-p" << "tcp:localhost:1234" << "-u" << PerforceUser << "files" << "//depot/...";
 
-    files.start("/usr/local/bin/p4", list);
+    files.start(PerforcePath, list);
     files.waitForFinished();
 
     QString p4_result = files.readAll();
     QStringList p4_lines = p4_result.split(QRegExp("[\r\n]"),QString::SkipEmptyParts);
 
-    bool do_retry = false;
-
-    for (int i =0; i < p4_lines.count(); i++)
+    if (files.exitCode() == 0)
     {
-        qDebug() << "p4> " << p4_lines.at(i);
-        if (p4_lines.at(i).startsWith("error:"))
+        QVector<QString>* file_list = new QVector<QString>();
+
+        // got the files - parse to get the list of files available.
+        for (int i = 0; i < p4_lines.length(); i++)
         {
-            if (p4_lines.at(i).contains("please login again") ||
-                p4_lines.at(i).contains("invalid or unset"))
+            if (p4_lines[i].startsWith("info:") == false)
+                continue;
+            QString file = p4_lines[i].mid(6 + 8); // info: //depot/
+            file = file.left(file.indexOf('#'));
+            file_list->push_back(file);
+        }
+
+        // send this to the forground thread
+        QMetaObject::invokeMethod(thunk, "update_file_list", Q_ARG(void*, file_list));
+    }
+    else
+    {
+        // Did we fail due to an expired login?
+        if (p4_lines.at(0).startsWith("error:"))
+        {
+            if (p4_lines.at(0).contains("please login again") ||
+                p4_lines.at(0).contains("invalid or unset"))
             {
                 qDebug() << "Issuing login";
 
@@ -86,44 +126,46 @@ void SSHTunnel::retrieve_files()
                 // issue the login
                 //
                 QProcess login;
-                connect(&login, &QProcess::readyReadStandardError, this, &SSHTunnel::echo_err);
-                connect(&login, &QProcess::readyReadStandardOutput, this, &SSHTunnel::echo_std);
-
                 QStringList login_list;
                 login_list << "-s" << "-p" << "localhost:1234" << "-u" << PerforceUser << "login";
-                login.start("/usr/local/bin/p4", login_list);
+                login.start(PerforcePath, login_list);
                 login.waitForStarted();
                 login.waitForReadyRead();
 
                 QString login_results = login.readAll();
+                qDebug() << login_results;
+
                 if (login_results.startsWith("Enter password:"))
                 {
-                    
+                    login.write(PerforcePassword.toUtf8(), PerforcePassword.length());
+                    login.write("\n", 1);
                 }
                 else
                     qDebug() << login_results;
 
+
                 login.waitForFinished(5000);
-                do_retry = true;
-                break;
-            }
-        }
-    }
 
-    if (do_retry == true && retrying == false)
-    {
-        retrying = true;
-        retrieve_files();
-        retrying = false;
-    }
+                bool do_retry = false;
 
+                qDebug() << "Retrying" << do_retry << retrying;
+
+                if (do_retry == true && retrying == false)
+                {
+                    retrying = true;
+                    retrieve_files();
+                    retrying = false;
+                }
+            } // end if login failure.
+        } // end if error:
+    } // end if p4 files failed.
 }
 
 void SSHTunnel::shutdown_tunnel()
 {
     // This shutdowns the SSH tunnel if connected.
     qDebug() << "Shutting down SSH...";
-    P.terminate();
+    P.kill();
     P.waitForFinished();
     qDebug() << "...Done";
 }
@@ -131,7 +173,7 @@ void SSHTunnel::shutdown_tunnel()
 void SSHTunnel::shutdown_fn()
 {
     qDebug() << "Shutting Down";
-    P.terminate();
+    P.kill();
     P.waitForFinished();
     qDebug() << "Closed.";
 
@@ -182,14 +224,41 @@ void MainWindow::ShowContextMenu(const QPoint &point)
 
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
-    ui(new Ui::MainWindow)
+    ui(new Ui::MainWindow),
+    file_list_thunker(ui)
 {
     ui->setupUi(this);
 
+    QSettings settings(QSettings::IniFormat, QSettings::UserScope, "Midnight Oil Games", "P4SSHQt");
+
+    if (false)
+    {
+        // just for setting up the settings...
+        settings.setValue("Tunnel/User", "tunnel_user");
+        settings.setValue("Tunnel/Server", "tunnel_server");
+        settings.setValue("Tunnel/Key", "tunnel_key");
+        settings.setValue("Tunnel/SSH", "tunnel_ssh");
+        settings.setValue("Perforce/User", "perforce_user");
+        settings.setValue("Perforce/Path", "perforce_path");
+    }
+    else
+    {
+        TunnelUser = settings.value("Tunnel/User", "tunnel_user").toString();
+        TunnelServer = settings.value("Tunnel/Server", "tunnel_server").toString();
+        TunnelKeyPathAndFile = settings.value("Tunnel/Key", "tunnel_key").toString();
+        PlinkPath = settings.value("Tunnel/SSH", "tunnel_ssh").toString();
+        PerforceUser = settings.value("Perforce/User", "perforce_user").toString();
+        PerforcePath = settings.value("Perforce/Path", "perforce_path").toString();
+
+        // Normally this will be done via dialog, however for the moment..
+        PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
+    }
+
+    //PerforcePassword = QInputDialog::getText(this, "Perforce Password", "Password:", QLineEdit::Password);
 
     qDebug() << "Creating SSH Tunnel";
 
-    Tunnel = new SSHTunnel();
+    Tunnel = new SSHTunnel(&file_list_thunker);
     Tunnel->moveToThread(&TunnelThread);
 
     qDebug() << Tunnel->thread();
@@ -210,23 +279,28 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->treeWidget, SIGNAL(customContextMenuRequested(const QPoint &)),
             this, SLOT(ShowContextMenu(const QPoint &)));
 
-    /*
+}
+
+void FileListThunk::update_file_list(void* new_file_list)
+{
+    QVector<QString>* file_list = (QVector<QString>*)new_file_list;
+    qDebug() << "got it";
+    qDebug() << *file_list;
+
+    qDebug() << main_window_ptr;
+    qDebug() << main_window_ptr->treeWidget;
+
     QHash<QString, QTreeWidgetItem*> tree;
     QFileIconProvider icons;
     QTreeWidgetItem* root = new QTreeWidgetItem((QTreeWidget*)0, QStringList(QString("test")));
     root->setIcon(0, icons.icon(QFileIconProvider::Folder));
-    ui->treeWidget->insertTopLevelItem(0, root);
+    main_window_ptr->treeWidget->insertTopLevelItem(0, root);
 
-    QDirIterator projects("c:\\devel\\projects\\", QDirIterator::Subdirectories);
-    while (projects.hasNext())
+    for (int i = 0; i < file_list->length(); i++)
     {
-        QString file = projects.next();
-        file.remove(0, 18);
+        QString file = file_list->at(i);
 
         QStringList sections = file.split("/");
-        if (sections.last() == "." ||
-            sections.last() == "..")
-            continue;
         // the last entry is the filename
         QString accumulator;
         for (int i = 0; i < sections.size(); i++)
@@ -257,7 +331,9 @@ MainWindow::MainWindow(QWidget *parent) :
         }
 
     }
-*/
+
+
+    delete file_list;
 }
 
 MainWindow::~MainWindow()
@@ -288,31 +364,8 @@ void MainWindow::closeEvent(QCloseEvent *)
     qDebug() << "done";
 }
 
-// This is the SSH user to use for the tunnel.
-QString TunnelUser;
-
-// This is the server to connect to with SSH
-QString TunnelServer;
-
-// This is the certificate file (.ppk) to use to authenticate the user with SSH.
-QString TunnelKeyPathAndFile;
-
-// This is the path and filename of plink.exe
-QString PlinkPath;
 
 void MainWindow::on_pushButton_clicked()
 {
-    QStringList args;
-    args << "-noagent" << "-L" << "1234:localhost:1666" << "-i" << TunnelKeyPathAndFile << TunnelUser << "@" << TunnelServer;
-
-    tunnel_process.start(PlinkPath, args);
-    tunnel_process.waitForStarted();
-
-    qDebug() << tunnel_process.errorString();
-
-    QByteArray outptu = tunnel_process.readAllStandardOutput();
-    qDebug() << outptu;
-
-    ui->textEdit->setText(QString::fromUtf8(outptu));
-    qDebug() << "ok";
+    QMetaObject::invokeMethod(Tunnel, "retrieve_files");
 }
