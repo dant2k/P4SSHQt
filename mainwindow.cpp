@@ -33,6 +33,12 @@ QString PerforceUser;
 // Not stored in
 QString PerforcePassword;
 
+// This is the clientspec for this machine.
+QString PerforceClientspec;
+
+// This is the path we set as the root in perforce.
+QString PerforceRoot;
+
 SSHTunnel::SSHTunnel(FileListThunk* _thunk) : P(this), thunk(_thunk)
 {
     retrying = false;
@@ -73,19 +79,17 @@ void SSHTunnel::download_file_to(QString depot_file, QString dest_dir)
     QProcess files;
 
     QStringList list;
-    list << "-s" << "-p" << "tcp:localhost:1234" << "-u" << PerforceUser << "print" << "-o" << output_file << ("//depot/" + depot_file);
+    list << "-p" << "tcp:localhost:1234" << "-u" << PerforceUser << "print" << "-o" << output_file << ("//depot/" + depot_file);
 
     files.start(PerforcePath, list);
     files.waitForFinished();
 }
 
-void SSHTunnel::retrieve_files()
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+bool SSHTunnel::run_perforce_command(QStringList command_and_args, QStringList& output_lines)
 {
-    // This tried to call p4 files to get all available files
-    // for retrieval, as well as the current client status.
-
-    // first we check if the connection is active. If it's failed,
-    // we try to reopen the tunnel.
+    // Verify tunnel is open
     if (P.processId() == 0)
     {
         // no active tunnel - try to connect
@@ -95,88 +99,163 @@ void SSHTunnel::retrieve_files()
         {
             // Couldn't get the tunnel to open
             qDebug() << "Tunnel failed to open";
-            return;
+            return false;
         }
     }
 
-    // Got a valid SSH process - try to issue the p4 files
-    qDebug() << "Trying to P4";
-
-    QProcess files;
+    qDebug() << "p4" << command_and_args;
 
     QStringList list;
-    list << "-s" << "-p" << "tcp:localhost:1234" << "-u" << PerforceUser << "files" << "//depot/...";
+    list << "-p" << "tcp:localhost:1234" << "-u" << PerforceUser << "-c" << PerforceClientspec << command_and_args;
 
+    QProcess files;
     files.start(PerforcePath, list);
     files.waitForFinished();
 
-    QString p4_result = files.readAll();
-    QStringList p4_lines = p4_result.split(QRegExp("[\r\n]"),QString::SkipEmptyParts);
+    QString p4_result = files.readAllStandardOutput();
+
+    output_lines = p4_result.split(QRegExp("[\r\n]"),QString::SkipEmptyParts);
 
     if (files.exitCode() == 0)
-    {
-        QVector<QString>* file_list = new QVector<QString>();
+        return true;
 
-        // got the files - parse to get the list of files available.
-        for (int i = 0; i < p4_lines.length(); i++)
+    QString error = files.readAllStandardError();
+    if (error.contains("please login again") ||
+        error.contains("invalid or unset"))
+    {
+        qDebug() << "Login expired.";
+
+        //
+        // issue the login
+        //
+        QProcess login;
+        QStringList login_list;
+        login_list << "-p" << "localhost:1234" << "-u" << PerforceUser << "login";
+        login.start(PerforcePath, login_list);
+        login.waitForStarted();
+        login.waitForReadyRead();
+
+        QString login_results = login.readAll();
+        qDebug() << login_results;
+
+        if (login_results.startsWith("Enter password:"))
         {
-            if (p4_lines[i].startsWith("info:") == false)
-                continue;
-            QString file = p4_lines[i].mid(6 + 8); // info: //depot/
-            file = file.left(file.indexOf('#'));
-            file_list->push_back(file);
+            login.write(PerforcePassword.toUtf8(), PerforcePassword.length());
+            login.write("\n", 1);
         }
+        else
+            qDebug() << login_results;
 
-        // send this to the forground thread
-        QMetaObject::invokeMethod(thunk, "update_file_list", Q_ARG(void*, file_list));
-    }
-    else
-    {
-        // Did we fail due to an expired login?
-        if (p4_lines.at(0).startsWith("error:"))
+
+        login.waitForFinished(5000);
+
+        bool do_retry = false;
+
+        qDebug() << "Retrying" << do_retry << retrying;
+
+        if (do_retry == true && retrying == false)
         {
-            if (p4_lines.at(0).contains("please login again") ||
-                p4_lines.at(0).contains("invalid or unset"))
-            {
-                qDebug() << "Issuing login";
+            retrying = true;
+            bool ret = run_perforce_command(command_and_args, output_lines);
+            retrying = false;
+            return ret;
+        }
+        return false;
+    } // end if login failure.
 
-                //
-                // issue the login
-                //
-                QProcess login;
-                QStringList login_list;
-                login_list << "-s" << "-p" << "localhost:1234" << "-u" << PerforceUser << "login";
-                login.start(PerforcePath, login_list);
-                login.waitForStarted();
-                login.waitForReadyRead();
+    qDebug() << "UNHANDLED ERROR";
+    qDebug() << command_and_args;
+    qDebug() << output_lines;
+    return false;
+}
 
-                QString login_results = login.readAll();
-                qDebug() << login_results;
+void SSHTunnel::retrieve_files()
+{
+    QMap<QString, FileEntry>* file_map = new QMap<QString, FileEntry>;
 
-                if (login_results.startsWith("Enter password:"))
-                {
-                    login.write(PerforcePassword.toUtf8(), PerforcePassword.length());
-                    login.write("\n", 1);
-                }
-                else
-                    qDebug() << login_results;
+    QStringList server_files;
+    QStringList args;
+    args << "fstat" << "-T" << "depotFile,clientFile,isMapped,headRev,haveRev,action,otherOpen" << "//depot/...";
+    if (run_perforce_command(args, server_files) == false)
+        return;
 
+    QString current_depot_file;
+    for (int i = 0; i < server_files.length(); i++)
+    {
+        if (server_files[i].startsWith("... depotFile"))
+        {
+            current_depot_file = server_files[i].mid(14 + 8);
+            file_map->operator [](current_depot_file).depot_file = current_depot_file;
+        }
+        else if (server_files[i].startsWith("... clientFile"))
+            file_map->operator [](current_depot_file).local_file = server_files[i].mid(15);
+        else if (server_files[i].startsWith("... isMapped"))
+            file_map->operator [](current_depot_file).subscribed = true;
+        else if (server_files[i].startsWith("... headRev"))
+            file_map->operator [](current_depot_file).head_revision = server_files[i].mid(12).toInt();
+        else if (server_files[i].startsWith("... haveRev"))
+            file_map->operator [](current_depot_file).local_revision = server_files[i].mid(12).toInt();
+        else if (server_files[i].startsWith("... action"))
+        {
+            // we have it open or for add.
+            if (server_files[i].mid(11) == "edit")
+                file_map->operator [](current_depot_file).open_for_edit = true;
+            else if (server_files[i].mid(11) == "add")
+                file_map->operator [](current_depot_file).open_for_add = true;
+        }
+        else if (server_files[i].startsWith("... otherOpen"))
+        {
+            // someone else has it open.
+            file_map->operator [](current_depot_file).open_by_another = true;
+        }
+    }
 
-                login.waitForFinished(5000);
+    //
+    // Check all files in the enlistment directory to find any files
+    // that need to be added.
+    //
+    QDirIterator it(PerforceRoot, QDirIterator::Subdirectories);
+    while (it.hasNext())
+    {
+        QString client_path = it.next();
+        if (it.fileInfo().isDir())
+            continue;
 
-                bool do_retry = false;
+        // strip off the depot path
+        QString depot_path = client_path.mid(PerforceRoot.length() + 1);
 
-                qDebug() << "Retrying" << do_retry << retrying;
+        // check if we need to add.
+        if (file_map->contains(depot_path) == false)
+        {
+            // New file - add to the database with no subscription or head rev.
+            file_map->operator [](depot_path).local_file = client_path;
+        }
+    }
 
-                if (do_retry == true && retrying == false)
-                {
-                    retrying = true;
-                    retrieve_files();
-                    retrying = false;
-                }
-            } // end if login failure.
-        } // end if error:
-    } // end if p4 files failed.
+    // send this to the forground thread
+    QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, file_map));
+}
+
+void SSHTunnel::CheckoutFile(QString depot_file)
+{
+    QStringList server_files;
+    QStringList args;
+    args << "edit" << "//depot/" + depot_file;
+    if (run_perforce_command(args, server_files) == false)
+        return;
+
+    retrieve_files();
+}
+
+void SSHTunnel::RevertFile(QString depot_file)
+{
+    QStringList server_files;
+    QStringList args;
+    args << "revert" << "//depot/" + depot_file;
+    if (run_perforce_command(args, server_files) == false)
+        return;
+
+    retrieve_files();
 }
 
 void SSHTunnel::shutdown_tunnel()
@@ -208,34 +287,81 @@ void SSHTunnel::echo_std()
     qDebug() << "ssh out>" << QString(P.readAllStandardOutput());
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_Edit()
+{
+    QMetaObject::invokeMethod(Tunnel, "CheckoutFile", Q_ARG(QString, Action_Edit->data().toString()));
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_Revert()
+{
+    QMetaObject::invokeMethod(Tunnel, "RevertFile", Q_ARG(QString, Action_Revert->data().toString()));
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void MainWindow::TestAction()
 {
 
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void MainWindow::ShowContextMenu(const QPoint &point)
 {
+    if (ui->treeWidget->selectedItems().length() == 0)
+        return; // no menu if nothing selected
+
+    QString const& selected_depot_file = ui->treeWidget->selectedItems().at(0)->data(0, Qt::UserRole).toString();
+
+    qDebug() << selected_depot_file;
+
+    if (selected_depot_file.length() == 0)
+        return; // directory.
+
     QMenu contextMenu(tr("Context menu"), this);
 
+    FileEntry const& entry = FileMap->operator [](selected_depot_file);
 
-    QAction action1("Edit", this);
-    connect(&action1, SIGNAL(triggered()), this, SLOT(TestAction()));
-    contextMenu.addAction(&action1);
+    if (entry.subscribed)
+    {
+        if (entry.head_revision == entry.local_revision)
+        {
+            if (entry.open_by_another == false) // can't do anything if locked.
+            {
+                // open for add shouldn't be in the list on the left.
+                Q_ASSERT(entry.open_for_add == false);
 
+                if (entry.open_for_edit == false)
+                {
+                    Action_Edit->setData(selected_depot_file);
+                    contextMenu.addAction(Action_Edit);
+                }
+                else
+                {
+                    Action_Revert->setData(selected_depot_file);
+                    contextMenu.addAction(Action_Revert);
+                }
+            }
+        }
+        else
+        {
+            // don't have latest - offer sync.
+        }
 
-    QAction action2("Subscribe", this);
-    connect(&action2, SIGNAL(triggered()), this, SLOT(TestAction()));
-    contextMenu.addAction(&action2);
-
-    QAction action3("Unsubscribe", this);
-    connect(&action3, SIGNAL(triggered()), this, SLOT(TestAction()));
-    contextMenu.addAction(&action3);
-
-    QAction action4("", this);
-    connect(&action4, SIGNAL(triggered()), this, SLOT(TestAction()));
-    contextMenu.addAction(&action4);
-
-
+        QAction action3("Unsubscribe", this);
+        connect(&action3, SIGNAL(triggered()), this, SLOT(TestAction()));
+        contextMenu.addAction(&action3);
+    }
+    else
+    {
+        QAction action2("Subscribe", this);
+        connect(&action2, SIGNAL(triggered()), this, SLOT(TestAction()));
+        contextMenu.addAction(&action2);
+    }
 
     contextMenu.exec(ui->treeWidget->mapToGlobal(point));
 }
@@ -243,9 +369,15 @@ void MainWindow::ShowContextMenu(const QPoint &point)
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow),
-    file_list_thunker(ui)
+    file_list_thunker(this),
+    FileMap(0)
 {
     ui->setupUi(this);
+
+    Action_Edit = new QAction("Edit", this);
+    connect(Action_Edit, SIGNAL(triggered()), this, SLOT(Context_Edit()));
+    Action_Revert = new QAction("Revert", this);
+    connect(Action_Revert, SIGNAL(triggered()), this, SLOT(Context_Revert()));
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "Midnight Oil Games", "P4SSHQt");
 
@@ -267,6 +399,8 @@ MainWindow::MainWindow(QWidget *parent) :
         PlinkPath = settings.value("Tunnel/SSH", "tunnel_ssh").toString();
         PerforceUser = settings.value("Perforce/User", "perforce_user").toString();
         PerforcePath = settings.value("Perforce/Path", "perforce_path").toString();
+        PerforceClientspec = settings.value("Perforce/Clientspec", "perforce_client").toString();
+        PerforceRoot = settings.value("Perforce/Root", "perforce_root").toString();
 
         // Normally this will be done via dialog, however for the moment..
         PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
@@ -299,24 +433,64 @@ MainWindow::MainWindow(QWidget *parent) :
 
 }
 
-void FileListThunk::update_file_list(void* new_file_list)
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void FileListThunk::RefreshUIThunk(void* new_file_list)
 {
-    QVector<QString>* file_list = (QVector<QString>*)new_file_list;
-    qDebug() << "got it";
-    qDebug() << *file_list;
+    QMap<QString, FileEntry>* file_list = (QMap<QString, FileEntry>*)new_file_list;
+    thunk_to->RefreshUI(file_list);
+}
 
-    qDebug() << main_window_ptr;
-    qDebug() << main_window_ptr->treeWidget;
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
+{
+    //
+    // Update the UI tree for the depot.
+    // For the moment just recreate entirely.
+    //
+    ui->treeWidget->clear();
+    ui->lstEdited->clear();
+
+    if (FileMap)
+        delete FileMap;
+    FileMap = 0;
+    FileMap = NewFileMap;
 
     QHash<QString, QTreeWidgetItem*> tree;
     QFileIconProvider icons;
-    QTreeWidgetItem* root = new QTreeWidgetItem((QTreeWidget*)0, QStringList(QString("test")));
+    QTreeWidgetItem* root = new QTreeWidgetItem((QTreeWidget*)0, QStringList(QString("depot")));
     root->setIcon(0, icons.icon(QFileIconProvider::Folder));
-    main_window_ptr->treeWidget->insertTopLevelItem(0, root);
+    ui->treeWidget->insertTopLevelItem(0, root);
 
-    for (int i = 0; i < file_list->length(); i++)
+    int out_of_date_count = 0;
+
+    QMap<QString, FileEntry>::const_iterator it = FileMap->constBegin();
+    for (; it != FileMap->constEnd(); ++it)
     {
-        QString file = file_list->at(i);
+        FileEntry const& entry = it.value();
+        QString const& file = it.value().depot_file;
+
+        if (entry.subscribed)
+        {
+            if (entry.local_revision != entry.head_revision)
+            {
+                // This file is out of date.
+                out_of_date_count++;
+            }
+
+            if (entry.open_for_add)
+            {
+                ui->lstEdited->addItem("(add) " + entry.depot_file);
+            }
+            if (entry.open_for_edit)
+                ui->lstEdited->addItem("(edit) " + entry.depot_file);
+        }
+
+
+        // we can have non-depot files it things need to be added.
+        if (file.length() == 0)
+            continue;
 
         QStringList sections = file.split("/");
         // the last entry is the filename
@@ -352,16 +526,21 @@ void FileListThunk::update_file_list(void* new_file_list)
 
             accumulator = current;
         }
-
     }
 
+    if (out_of_date_count == 0)
+        ui->lblOutOfDate->setText("All files updated.");
+    else if (out_of_date_count == 1)
+        ui->lblOutOfDate->setText("1 file out of date.");
+    else
+        ui->lblOutOfDate->setText(out_of_date_count + " files out of date.");
 
-    delete file_list;
 }
 
 MainWindow::~MainWindow()
 {
     delete ui;
+    delete FileMap;
 }
 
 
@@ -388,7 +567,7 @@ void MainWindow::closeEvent(QCloseEvent *)
 }
 
 
-void MainWindow::on_pushButton_clicked()
+void MainWindow::on_btnConnect_clicked()
 {
     QMetaObject::invokeMethod(Tunnel, "retrieve_files");
 }
