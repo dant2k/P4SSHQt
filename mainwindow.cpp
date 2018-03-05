@@ -9,7 +9,7 @@
 #include "qsettings.h"
 #include "qinputdialog.h"
 #include "qfiledialog.h"
-
+#include "qmessagebox.h"
 
 // This is the SSH user to use for the tunnel.
 QString TunnelUser;
@@ -241,6 +241,39 @@ void SSHTunnel::CheckoutFile(QString depot_file)
     QStringList server_files;
     QStringList args;
     args << "edit" << "//depot/" + depot_file;
+    if (run_perforce_command(args, server_files) == false)
+        return;
+
+    retrieve_files();
+}
+
+void SSHTunnel::SubmitFiles(void* depot_file_list, QString commit_message)
+{
+    QStringList* depot_files = (QStringList*)depot_file_list;
+
+    QStringList server_files;
+    QStringList args;
+    args << "submit";
+    args << "-d" << commit_message;
+    for (int i = 0; i < depot_files->length(); i++)
+        args << "//depot/" + depot_files->at(i);
+
+    if (run_perforce_command(args, server_files) == false)
+        return;
+
+    retrieve_files();
+}
+
+void SSHTunnel::RevertFiles(void* depot_file_list)
+{
+    QStringList* depot_files = (QStringList*)depot_file_list;
+
+    QStringList server_files;
+    QStringList args;
+    args << "revert";
+    for (int i = 0; i < depot_files->length(); i++)
+        args << "//depot/" + depot_files->at(i);
+
     if (run_perforce_command(args, server_files) == false)
         return;
 
@@ -566,10 +599,71 @@ void MainWindow::closeEvent(QCloseEvent *)
     qDebug() << "done";
 }
 
-
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void MainWindow::on_btnConnect_clicked()
 {
     QMetaObject::invokeMethod(Tunnel, "retrieve_files");
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::on_btnRevertSelected_clicked()
+{
+    QList<QListWidgetItem *> items = ui->lstEdited->selectedItems();
+    if (items.length() == 0)
+        return;
+
+    QMessageBox msgBox;
+    msgBox.setText("This will erase changes!");
+    msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    msgBox.setDefaultButton(QMessageBox::Cancel);
+    int ret = msgBox.exec();
+    if (ret != QMessageBox::Ok)
+        return;
+
+    QStringList* depot_files = new QStringList();
+    for (int i = 0; i < items.length(); i++)
+    {
+        QString file_text = items.at(i)->text();
+        file_text = file_text.mid(file_text.indexOf(' ') + 1);
+        depot_files->push_back(file_text);
+    }
+
+    QMetaObject::invokeMethod(Tunnel, "RevertFiles", Q_ARG(void*, depot_files));
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::on_btnCommitSelected_clicked()
+{
+    QList<QListWidgetItem *> items = ui->lstEdited->selectedItems();
+    if (items.length() == 0)
+        return;
+
+    bool ok = false;
+    QString commit_message = QInputDialog::getText(this, "Commit Message", "Description:", QLineEdit::Normal, "", &ok);
+    if (ok == false)
+        return;
+
+    if (commit_message.length() == 0)
+    {
+        QMessageBox msgBox;
+        msgBox.setText("Requires description.");
+        msgBox.setStandardButtons(QMessageBox::Ok);
+        msgBox.exec();
+        return;
+    }
+
+    QStringList* depot_files = new QStringList();
+    for (int i = 0; i < items.length(); i++)
+    {
+        QString file_text = items.at(i)->text();
+        file_text = file_text.mid(file_text.indexOf(' ') + 1);
+        depot_files->push_back(file_text);
+    }
+
+    QMetaObject::invokeMethod(Tunnel, "SubmitFiles", Q_ARG(void*, depot_files), Q_ARG(QString, commit_message));
 }
 
 void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int column)

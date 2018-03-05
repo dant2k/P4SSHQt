@@ -153,17 +153,21 @@
        </widget>
       </item>
       <item row="4" column="0" colspan="3">
-       <widget class="QListWidget" name="lstEdited"/>
+       <widget class="QListWidget" name="lstEdited">
+        <property name="selectionMode">
+         <enum>QAbstractItemView::MultiSelection</enum>
+        </property>
+       </widget>
       </item>
       <item row="5" column="0">
-       <widget class="QPushButton" name="btnCommit">
+       <widget class="QPushButton" name="btnCommitSelected">
         <property name="text">
          <string>Commit</string>
         </property>
        </widget>
       </item>
       <item row="5" column="2">
-       <widget class="QPushButton" name="btnRevert">
+       <widget class="QPushButton" name="btnRevertSelected">
         <property name="text">
          <string>Revert</string>
         </property>

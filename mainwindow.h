@@ -64,6 +64,8 @@ public slots:
 
     void CheckoutFile(QString depot_file);
     void RevertFile(QString depot_file);
+    void RevertFiles(void* depot_file_list);
+    void SubmitFiles(void* depot_file_list, QString commit_message);
 };
 
 
@@ -121,6 +123,8 @@ private:
 
 public slots:
     void on_btnConnect_clicked();
+    void on_btnRevertSelected_clicked();
+    void on_btnCommitSelected_clicked();
 
     void on_treeWidget_itemDoubleClicked(QTreeWidgetItem* item, int column);
 
