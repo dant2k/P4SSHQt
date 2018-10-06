@@ -7,10 +7,48 @@
 #include <qdebug.h>
 #include <qtreeview.h>
 #include <qtreewidget.h>
+#include <qdialog.h>
+#include <qplaintextedit.h>
 
 namespace Ui {
 class MainWindow;
 }
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+struct FileEntry
+{
+    // depot_file is empty if local only
+    QString depot_file;
+
+    // file on disc
+    QString local_file;
+
+    // if local != head revision, we can't operate on the file at ALL
+    // other than to subscribe or unsubscribe.
+    // if head revision is zero, its a local only file that needs to be added.
+    int head_revision;
+
+    // if we have a local revision, then its a subscribed file
+    // otherwise its just a downloadable file.
+    int local_revision;
+
+    // state of the file in the depot.
+    bool open_for_edit;
+    bool open_by_another;
+
+    bool exists_in_depot;
+
+    FileEntry()
+    {
+        exists_in_depot = false;
+        head_revision = 0;
+        local_revision = 0;
+        open_by_another = false;
+        open_for_edit = false;
+    }
+};
+
 
 //-----------------------------------------------------------------------------
 // This class is because I can't convince invokeMethod to call directly
@@ -57,42 +95,29 @@ public slots:
     void echo_err();
     void tunnel_closed(int exit_code, QProcess::ExitStatus exit_status);
 
-    bool run_perforce_command(QStringList command_and_args, QStringList& output_lines);
+    bool run_perforce_command(QStringList command_and_args, QString const& std_input, QStringList& output_lines);
 
-    void retrieve_files();
+    QMap<QString, FileEntry>* retrieve_files(bool post_to_foreground);
     void download_file_to(QString depot_file, QString dest_dir);
 
-    void CheckoutFile(QString depot_file);
-    void RevertFile(QString depot_file);
-    void RevertFiles(void* depot_file_list);
-    void SubmitFiles(void* depot_file_list, QString commit_message);
+    void RunQueue();
 };
 
-
-struct FileEntry
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+class SubmitDialog : public QDialog
 {
+    Q_OBJECT
 
-    QString depot_file;
-    QString local_file;
-    int head_revision;
-    int local_revision;
-    bool subscribed;
-    bool open_for_edit;
-    bool open_for_add;
-    bool open_by_another;
+public:
+    explicit SubmitDialog(const QStringList& SubmitFiles, QWidget* parent = 0);
 
-    FileEntry()
-    {
-        head_revision = 0;
-        local_revision = 0;
-        subscribed = false;
-        open_by_another = false;
-        open_for_add = false;
-        open_for_edit = false;
-    }
+    QPlainTextEdit* commit_msg_edit;
+
 };
 
-
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -118,20 +143,42 @@ private:
 
     QAction* Action_Edit;
     QAction* Action_Revert;
+    QAction* Action_AddToDepot;
+    QAction* Action_DeleteDisc;
+    QAction* Action_DeleteDepot;
+    QAction* Action_Subscribe;
+    QAction* Action_Unsubscribe;
+    QAction* Action_Download;
+    QAction* Action_Sync;
+    QAction* Action_ForceSync;
 
     virtual void closeEvent(QCloseEvent *event);
 
 public slots:
-    void on_btnConnect_clicked();
-    void on_btnRevertSelected_clicked();
+    void filter_changed(const QString& text);
+
+    void on_btnRefresh_clicked();
+    void on_btnRunQueue_clicked();
     void on_btnCommitSelected_clicked();
+    void on_btnGetLatest_clicked();
+    void on_btnOpenP4_clicked();
 
     void on_treeWidget_itemDoubleClicked(QTreeWidgetItem* item, int column);
 
+    void on_lstEdited_itemSelectionChanged();
+
     void ShowContextMenu(const QPoint& point);
-    void TestAction();
+
     void Context_Edit();
     void Context_Revert();
+    void Context_AddToDepot();
+    void Context_DeleteDisc();
+    void Context_DeleteDepot();
+    void Context_Subscribe();
+    void Context_Unsubscribe();
+    void Context_Download();
+    void Context_Sync();
+    void Context_ForceSync();
 };
 
 #endif // MAINWINDOW_H

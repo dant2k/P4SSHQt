@@ -10,34 +10,58 @@
 #include "qinputdialog.h"
 #include "qfiledialog.h"
 #include "qmessagebox.h"
+#include "qplaintextedit.h"
+#include "qdialogbuttonbox.h"
+
+working
+/*
+ * -- need to get the listbox columns sizing so we can see the entire filename, or just
+ *      put everything in one column.
+ * -- need version history.
+ * -- need partial queue process on failure
+ * -- not sure if I should even have queues to be honest. Seems pointless? Just make sure things
+ *      run in the background.
+ * -- need to test adding a new folder
+ * -- adding file descriptions.
+ * -- need to delete the changelist on a failed submission.
+ * -- need commands on an entire folder.
+ * -- need delete from disc for files that are new.
+ * -- need to open folder for a file.
+ * -- try to find a way to open associated program for an edited file?
+ * -- add a "reconcile changes?"
+ * -- write a wrapper program for plink and ssh that just monitors for the parent process dying
+ *      and kills the tunnel to try and avoid shitlets.
+ * -- check for the port being open on connection instead of waiting forever - the pause on
+ *      open actually sucks.
+ * */
 
 // This is the SSH user to use for the tunnel.
-QString TunnelUser;
+static QString TunnelUser;
 
 // This is the server to connect to with SSH
-QString TunnelServer;
+static QString TunnelServer;
 
 // This is the certificate file (.ppk) to use to authenticate the user with SSH.
-QString TunnelKeyPathAndFile;
+static QString TunnelKeyPathAndFile;
 
 // This is the path and filename of plink.exe (or ssh)
-QString PlinkPath;
+static QString PlinkPath;
 
 // This is the path and filename of p4.exe
-QString PerforcePath;
+static QString PerforcePath;
 
 // This is the perforce username (NOT the tunnel username!!)
-QString PerforceUser;
+static QString PerforceUser;
 
 // This is the password for _perforce_, not the tunnel key.
 // Not stored in
-QString PerforcePassword;
+static QString PerforcePassword;
 
 // This is the clientspec for this machine.
-QString PerforceClientspec;
+static QString PerforceClientspec;
 
 // This is the path we set as the root in perforce.
-QString PerforceRoot;
+static QString PerforceRoot;
 
 SSHTunnel::SSHTunnel(FileListThunk* _thunk) : P(this), thunk(_thunk)
 {
@@ -87,7 +111,7 @@ void SSHTunnel::download_file_to(QString depot_file, QString dest_dir)
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-bool SSHTunnel::run_perforce_command(QStringList command_and_args, QStringList& output_lines)
+bool SSHTunnel::run_perforce_command(QStringList command_and_args, QString const& std_input, QStringList& output_lines)
 {
     // Verify tunnel is open
     if (P.processId() == 0)
@@ -110,6 +134,12 @@ bool SSHTunnel::run_perforce_command(QStringList command_and_args, QStringList& 
 
     QProcess files;
     files.start(PerforcePath, list);
+    if (std_input.length())
+    {
+        files.waitForStarted();
+        files.write(std_input.toLatin1());
+        files.closeWriteChannel();
+    }
     files.waitForFinished();
 
     QString p4_result = files.readAllStandardOutput();
@@ -149,14 +179,15 @@ bool SSHTunnel::run_perforce_command(QStringList command_and_args, QStringList& 
 
         login.waitForFinished(5000);
 
-        bool do_retry = false;
+        // Now that we've logged in - try to run the command we were issued.
+        bool do_retry = true;
 
         qDebug() << "Retrying" << do_retry << retrying;
 
         if (do_retry == true && retrying == false)
         {
             retrying = true;
-            bool ret = run_perforce_command(command_and_args, output_lines);
+            bool ret = run_perforce_command(command_and_args, QString(),output_lines);
             retrying = false;
             return ret;
         }
@@ -169,15 +200,22 @@ bool SSHTunnel::run_perforce_command(QStringList command_and_args, QStringList& 
     return false;
 }
 
-void SSHTunnel::retrieve_files()
+QMap<QString, FileEntry>* SSHTunnel::retrieve_files(bool post_to_foreground)
 {
     QMap<QString, FileEntry>* file_map = new QMap<QString, FileEntry>;
 
     QStringList server_files;
-    QStringList args;
-    args << "fstat" << "-T" << "depotFile,clientFile,isMapped,headRev,haveRev,action,otherOpen" << "//depot/...";
-    if (run_perforce_command(args, server_files) == false)
-        return;
+    {
+        QStringList args;
+        args << "fstat" << "-F" << "^headAction=delete" << "-T" << "depotFile,clientFile,headRev,haveRev,action,otherOpen" << "//depot/...";
+        if (run_perforce_command(args, QString(), server_files) == false)
+            return nullptr;
+    }
+
+    QStringList revert_list;
+    QStringList remove_from_files_list;
+
+    QSet<QString> client_folders;
 
     QString current_depot_file;
     for (int i = 0; i < server_files.length(); i++)
@@ -186,11 +224,16 @@ void SSHTunnel::retrieve_files()
         {
             current_depot_file = server_files[i].mid(14 + 8);
             file_map->operator [](current_depot_file).depot_file = current_depot_file;
+            file_map->operator [](current_depot_file).exists_in_depot = true;
         }
         else if (server_files[i].startsWith("... clientFile"))
+        {
             file_map->operator [](current_depot_file).local_file = server_files[i].mid(15);
-        else if (server_files[i].startsWith("... isMapped"))
-            file_map->operator [](current_depot_file).subscribed = true;
+
+            // track the different folders so we can make sure they are created.
+            QString& local_file = file_map->operator [](current_depot_file).local_file;
+            client_folders.insert(local_file.left(local_file.lastIndexOf(QDir::separator())));
+        }
         else if (server_files[i].startsWith("... headRev"))
             file_map->operator [](current_depot_file).head_revision = server_files[i].mid(12).toInt();
         else if (server_files[i].startsWith("... haveRev"))
@@ -201,13 +244,54 @@ void SSHTunnel::retrieve_files()
             if (server_files[i].mid(11) == "edit")
                 file_map->operator [](current_depot_file).open_for_edit = true;
             else if (server_files[i].mid(11) == "add")
-                file_map->operator [](current_depot_file).open_for_add = true;
+            {
+                // if an add failed, then the file is on disc but not in the server
+                // list - which means it'll get added below in the consistency check.
+                revert_list << current_depot_file;
+                remove_from_files_list << current_depot_file;
+            }
+            else if (server_files[i].mid(11) == "delete")
+            {
+                // if a delete failed, then the file is on the server and on disc -
+                // so its just a normal unedited file at this point.
+                revert_list << current_depot_file;
+            }
         }
         else if (server_files[i].startsWith("... otherOpen"))
         {
             // someone else has it open.
             file_map->operator [](current_depot_file).open_by_another = true;
         }
+    }
+
+    //
+    // Make sure the local directories exist, so that it's easy to add files.
+    //
+    foreach (const QString& d, client_folders)
+    {
+        QDir dir(d);
+        if (dir.exists() == false)
+        {
+            dir.mkpath(".");
+        }
+    }
+
+    //
+    // Any files that are open for add or delete represent failures of previous operations -
+    // revert those actions
+    //
+    if (revert_list.length())
+    {
+        QStringList args;
+        args << "revert" << "-k" << revert_list;
+        revert_list.clear();
+        run_perforce_command(args, QString(), revert_list);
+    }
+
+    // these files need to be removed from server_files.
+    for (int i = 0; i < remove_from_files_list.length(); i++)
+    {
+        file_map->remove(remove_from_files_list[i]);
     }
 
     //
@@ -229,66 +313,17 @@ void SSHTunnel::retrieve_files()
         {
             // New file - add to the database with no subscription or head rev.
             file_map->operator [](depot_path).local_file = client_path;
+            file_map->operator [](depot_path).depot_file = depot_path;
+            file_map->operator [](depot_path).exists_in_depot = false;
         }
     }
 
-    // send this to the forground thread
-    QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, file_map));
-}
-
-void SSHTunnel::CheckoutFile(QString depot_file)
-{
-    QStringList server_files;
-    QStringList args;
-    args << "edit" << "//depot/" + depot_file;
-    if (run_perforce_command(args, server_files) == false)
-        return;
-
-    retrieve_files();
-}
-
-void SSHTunnel::SubmitFiles(void* depot_file_list, QString commit_message)
-{
-    QStringList* depot_files = (QStringList*)depot_file_list;
-
-    QStringList server_files;
-    QStringList args;
-    args << "submit";
-    args << "-d" << commit_message;
-    for (int i = 0; i < depot_files->length(); i++)
-        args << "//depot/" + depot_files->at(i);
-
-    if (run_perforce_command(args, server_files) == false)
-        return;
-
-    retrieve_files();
-}
-
-void SSHTunnel::RevertFiles(void* depot_file_list)
-{
-    QStringList* depot_files = (QStringList*)depot_file_list;
-
-    QStringList server_files;
-    QStringList args;
-    args << "revert";
-    for (int i = 0; i < depot_files->length(); i++)
-        args << "//depot/" + depot_files->at(i);
-
-    if (run_perforce_command(args, server_files) == false)
-        return;
-
-    retrieve_files();
-}
-
-void SSHTunnel::RevertFile(QString depot_file)
-{
-    QStringList server_files;
-    QStringList args;
-    args << "revert" << "//depot/" + depot_file;
-    if (run_perforce_command(args, server_files) == false)
-        return;
-
-    retrieve_files();
+    if (post_to_foreground)
+    {
+        // send this to the forground thread
+        QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, file_map));
+    }
+    return file_map;
 }
 
 void SSHTunnel::shutdown_tunnel()
@@ -320,27 +355,643 @@ void SSHTunnel::echo_std()
     qDebug() << "ssh out>" << QString(P.readAllStandardOutput());
 }
 
+enum QueuedActionType
+{
+    QA_Edit,
+    QA_Revert,
+    QA_Commit,
+    QA_Add,
+    QA_Subscribe,
+    QA_Unsubscribe,
+    QA_Sync,
+    QA_ForceSync,
+    QA_GetLatest,
+    QA_Download,
+    QA_Delete
+};
+
+struct QueuedAction
+{
+    QString depot_file;
+    QString relevant_file;
+    QueuedActionType action;
+    QStringList commit_files;
+};
+
+static QVector<QueuedAction*> queued_actions;
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_edit(QMap<QString, FileEntry>& files, QString& file_to_edit)
+{
+    if (files.contains(file_to_edit) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_edit];
+    if (entry.exists_in_depot == false)
+        return false;
+    if (entry.open_by_another)
+        return false;
+    if (entry.local_revision != entry.head_revision)
+        return false;
+    if (entry.open_for_edit)
+        return true; // this technically is a non-op, so allow it.
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_delete(QMap<QString, FileEntry>& files, QString& file_to_edit)
+{
+    if (files.contains(file_to_edit) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_edit];
+    if (entry.exists_in_depot == false)
+        return false;
+    if (entry.open_by_another)
+        return false;
+    if (entry.local_revision != entry.head_revision)
+        return false;
+    if (entry.open_for_edit)
+        return false;
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_revert(QMap<QString, FileEntry>& files, QString& file_to_revert)
+{
+    if (files.contains(file_to_revert) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_revert];
+    if (entry.open_for_edit == false)
+        return false;
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_add(QMap<QString, FileEntry>& files, QString& file_to_add)
+{
+    if (files.contains(file_to_add) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_add];
+    if (entry.exists_in_depot)
+        return false;
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_sync(QMap<QString, FileEntry>& files, QString& file_to_add)
+{
+    if (files.contains(file_to_add) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_add];
+    if (entry.exists_in_depot == false)
+        return false;
+    if (entry.open_for_edit)
+        return false; // must revert first
+    if (entry.local_revision == 0)
+        return false; // must subscribe first.
+    if (entry.local_revision == entry.head_revision)
+        return false; // already synced - must force sync
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_forcesync(QMap<QString, FileEntry>& files, QString& file_to_add)
+{
+    if (files.contains(file_to_add) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_add];
+    if (entry.exists_in_depot == false)
+        return false;
+    if (entry.open_for_edit)
+        return false; // must revert first
+    if (entry.local_revision == 0)
+        return false; // must subscribe first.
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_subscribe(QMap<QString, FileEntry>& files, QString& file_to_add)
+{
+    if (files.contains(file_to_add) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_add];
+    if (entry.exists_in_depot == false)
+        return false;
+    if (entry.local_revision != 0)
+        return false; // already subbed?
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_unsubscribe(QMap<QString, FileEntry>& files, QString& file_to_add)
+{
+    if (files.contains(file_to_add) == false)
+        return false; // file doesn't exist
+
+    FileEntry& entry = files[file_to_add];
+    if (entry.exists_in_depot == false ||
+        entry.open_for_edit)
+        return false;
+    if (entry.local_revision == 0)
+        return false; // already unsubbed?
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+static bool validate_submit(QMap<QString, FileEntry>& files, QStringList& files_to_submit)
+{
+    foreach (QString const& file, files_to_submit)
+    {
+        if (files.contains(file) == false)
+            return false;
+        FileEntry& entry = files[file];
+
+        // to submit, we have to have it open for edit (and no one else can)
+        // and it has to be at the head revision, and actually in the depot.
+        if (entry.exists_in_depot == false ||
+            entry.open_for_edit == false ||
+            entry.local_revision != entry.head_revision ||
+            entry.open_by_another == true)
+            return false;
+    }
+    return true;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void SSHTunnel::RunQueue()
+{
+    // Make sure we have the latest state from the server, it case we
+    // were opened from a hibernate/sleep state and files changed from
+    // another machine.
+    QMap<QString, FileEntry>* current_files = retrieve_files(false);
+    if (current_files == nullptr)
+    {
+        // unable to open tunnel - bail on the queue
+        return;
+    }
+    QMap<QString, FileEntry>& files = *current_files; // for syntax insanity
+
+    for (int i = 0; i < queued_actions.length(); i++)
+    {
+        QStringList args;
+        QStringList server_files;
+        switch (queued_actions[i]->action)
+        {
+        case QA_Edit:
+        {
+            if (validate_edit(files, queued_actions[i]->depot_file))
+            {
+                args << "edit" << "//depot/" + queued_actions[i]->depot_file;
+                if (run_perforce_command(args, QString(), server_files))
+                {
+                    files[queued_actions[i]->depot_file].open_for_edit = true;
+                }
+            }
+
+            break;
+        }
+        case QA_Sync:
+        {
+            if (validate_sync(files, queued_actions[i]->depot_file))
+            {
+                args << "sync" << "//depot/" + queued_actions[i]->depot_file;
+                if (run_perforce_command(args, QString(), server_files))
+                    files[queued_actions[i]->depot_file].local_revision = files[queued_actions[i]->depot_file].head_revision;
+            }
+            break;
+        }
+        case QA_ForceSync:
+        {
+            if (validate_forcesync(files, queued_actions[i]->depot_file))
+            {
+                args << "sync" << "-f" << "//depot/" + queued_actions[i]->depot_file;
+                if (run_perforce_command(args, QString(), server_files))
+                    files[queued_actions[i]->depot_file].local_revision = files[queued_actions[i]->depot_file].head_revision;
+            }
+            break;
+        }
+        case QA_Delete:
+        {
+            if (validate_delete(files, queued_actions[i]->depot_file))
+            {
+                // create a changelist.
+                // add the file to the changelist
+                // submit the changelist.
+                args << "change" << "-i";
+                QString changelist = "Change: new\nDescription: Deleting File\n";
+                QStringList results;
+                if (run_perforce_command(args, changelist, results))
+                {
+                    // get the changelist ID.
+                    if (results.length())
+                    {
+                        QString parse = results.at(0);
+                        parse = parse.mid(7);
+                        parse = parse.left(parse.indexOf(' '));
+                        qDebug() << "Using Change: " << parse;
+
+                        args.clear();
+                        args << "delete" << "-c" << parse << "//depot/" + queued_actions[i]->depot_file;
+                        if (run_perforce_command(args, QString(), server_files))
+                        {
+                            qDebug() << "Opened for delete";
+
+                            args.clear();
+                            args << "submit" << "-c" << parse;
+                            if (run_perforce_command(args, QString(), server_files))
+                            {
+                                qDebug() << "Done";
+                                files.remove(queued_actions[i]->depot_file);
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        case QA_GetLatest:
+        {
+            // We want to sync all the files that are subscribed, out of date, and not edited.
+            QString std_input_file_list;
+            std_input_file_list += "-L\n";
+
+            int file_count = 0;
+            QMap<QString, FileEntry>::const_iterator it = files.constBegin();
+            for (; it != files.constEnd(); ++it)
+            {
+                FileEntry const& entry = it.value();
+                QString const& file = it.value().depot_file;
+
+                if (entry.local_revision &&
+                    entry.local_revision != entry.head_revision &&
+                    entry.open_for_edit == false)
+                {
+                    std_input_file_list += "//depot/" + file + "#" + QString::number(entry.head_revision) + "\n";
+                    file_count++;
+                }
+            }
+
+            // Don't EVER do a sync without a file, because that amounts to subscribing
+            // to the entire depot.
+            if (file_count > 0)
+            {
+                args << "-x" << "-" << "sync";
+                if (run_perforce_command(args, std_input_file_list, server_files))
+                {
+                    QMap<QString, FileEntry>::iterator it = files.begin();
+                    for (; it != files.end(); ++it)
+                    {
+                        FileEntry& entry = it.value();
+                        if (entry.local_revision &&
+                            entry.local_revision != entry.head_revision &&
+                            entry.open_for_edit == false)
+                        {
+                            entry.local_revision = entry.head_revision;
+                        }
+                    }
+                }
+            }
+
+            break;
+        }
+        case QA_Subscribe:
+        {
+            // A subscribed file is one we have synced at all (ie not at 0/N).
+            // So subscribing is just syncing the file to head.
+            if (validate_subscribe(files, queued_actions[i]->depot_file))
+            {
+                args << "sync" << "//depot/" + queued_actions[i]->depot_file;
+                if (run_perforce_command(args, QString(), server_files))
+                    files[queued_actions[i]->depot_file].local_revision = files[queued_actions[i]->depot_file].head_revision;
+            }
+            break;
+        }
+        case QA_Unsubscribe:
+        {
+            // Since a subscribed file is synced to not 0/N, unsubscribing is syncing the
+            // file to 0.
+            if (validate_unsubscribe(files, queued_actions[i]->depot_file))
+            {
+                args << "sync" << "//depot/" + queued_actions[i]->depot_file + "#0";
+                if (run_perforce_command(args, QString(), server_files))
+                    files[queued_actions[i]->depot_file].local_revision = 0;
+            }
+            break;
+        }
+        case QA_Download:
+        {
+            args << "print" << "-o" << queued_actions[i]->relevant_file << "//depot/" + queued_actions[i]->depot_file;
+            run_perforce_command(args, QString(), server_files);
+            qDebug() << server_files;
+            break;
+        }
+        case QA_Commit:
+        {
+            if (validate_submit(files, queued_actions[i]->commit_files))
+            {
+                QString std_input_file_list;
+                std_input_file_list += "-d\n";
+                std_input_file_list += queued_actions[i]->relevant_file;
+                std_input_file_list += "\n";
+
+                foreach (QString const& str, queued_actions[i]->commit_files)
+                {
+                    std_input_file_list += "//depot/" + str + "\n";
+                }
+
+                args << "-x" << "-" << "submit";
+                if (run_perforce_command(args, std_input_file_list, server_files))
+                {
+                    // submit succeeded - so we got a new revision, which we have,
+                    // and it isn't edited anymore.
+                    foreach (QString const& str, queued_actions[i]->commit_files)
+                    {
+                        files[str].head_revision++;
+                        files[str].local_revision++;
+                        files[str].open_for_edit = false;
+                    }
+                }
+                else
+                {
+                    // If the submit failed, then all of our files are now in
+                    // a random changelist, when we want them in the default
+                    // changelist.
+
+                    std_input_file_list = "-c\n";
+                    std_input_file_list += "default\n";
+
+                    foreach (QString const& str, queued_actions[i]->commit_files)
+                    {
+                        std_input_file_list += "//depot/" + str + "\n";
+                    }
+
+                    args.clear();
+                    args << "-x" << "-" << "reopen";
+                    run_perforce_command(args, std_input_file_list, server_files);
+
+                    // \todo delete the empty changelist... get it from teh output
+                    // from the fail?
+                }
+            }
+            break;
+        }
+        case QA_Revert:
+        {
+            if (validate_revert(files, queued_actions[i]->depot_file))
+            {
+                args << "revert" << "//depot/" + queued_actions[i]->depot_file;
+
+                if (run_perforce_command(args, QString(), server_files))
+                {
+                    files[queued_actions[i]->depot_file].open_for_edit = false;
+                }
+            }
+            break;
+        }
+        case QA_Add:
+        {
+            if (validate_add(files, queued_actions[i]->depot_file))
+            {
+                // create a changelist.
+                // add the file to the changelist
+                // submit the changelist.
+                args << "change" << "-i";
+                QString changelist = "Change: new\nDescription: Adding File\n";
+                QStringList results;
+                if (run_perforce_command(args, changelist, results))
+                {
+                    // get the changelist ID.
+                    if (results.length())
+                    {
+                        QString parse = results.at(0);
+                        parse = parse.mid(7);
+                        parse = parse.left(parse.indexOf(' '));
+                        qDebug() << "Using Change: " << parse;
+
+                        args.clear();
+                        args << "add" << "-c" << parse << "-t" << "+l" << "//depot/" + queued_actions[i]->depot_file;
+                        if (run_perforce_command(args, QString(), server_files))
+                        {
+                            qDebug() << "Opened for add";
+
+                            args.clear();
+                            args << "submit" << "-c" << parse;
+                            if (run_perforce_command(args, QString(), server_files))
+                            {
+                                qDebug() << "Done";
+                                files[queued_actions[i]->depot_file].exists_in_depot = true;
+                                files[queued_actions[i]->depot_file].local_revision = 1;
+                                files[queued_actions[i]->depot_file].head_revision = 1;
+                            }
+                        }
+                    }
+                }
+
+            }
+            break;
+        }
+        } // end switch action
+
+        delete queued_actions[i];
+    } // end for each action
+    queued_actions.clear();
+
+    // Send the updated files list to the UI.
+    QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, current_files));
+}
+
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::Context_Edit()
 {
-    QMetaObject::invokeMethod(Tunnel, "CheckoutFile", Q_ARG(QString, Action_Edit->data().toString()));
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Edit;
+    qa->depot_file = Action_Edit->data().toString();
+
+    QListWidgetItem* item = new QListWidgetItem("<edit> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
 }
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::Context_Revert()
 {
-    QMetaObject::invokeMethod(Tunnel, "RevertFile", Q_ARG(QString, Action_Revert->data().toString()));
+    QMessageBox msgBox;
+    msgBox.setText("This may erase changes!");
+    msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    msgBox.setDefaultButton(QMessageBox::Cancel);
+    int ret = msgBox.exec();
+    if (ret != QMessageBox::Ok)
+        return;
+
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Revert;
+    qa->depot_file = Action_Revert->data().toString();
+
+    QListWidgetItem* item = new QListWidgetItem("<revert> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
 }
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void MainWindow::TestAction()
+void MainWindow::Context_AddToDepot()
 {
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Add;
+    qa->depot_file = Action_AddToDepot->data().toString();
 
+    QListWidgetItem* item = new QListWidgetItem("<add> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_DeleteDepot()
+{
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Delete;
+    qa->depot_file = Action_DeleteDepot->data().toString();
+
+    QListWidgetItem* item = new QListWidgetItem("<delete> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_DeleteDisc()
+{
+    //QMetaObject::invokeMethod(Tunnel, "RevertFile", Q_ARG(QString, Action_Revert->data().toString()));
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_Subscribe()
+{
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Subscribe;
+    qa->depot_file = Action_Subscribe->data().toString();
+
+    QListWidgetItem* item = new QListWidgetItem("<subscribe> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_Unsubscribe()
+{
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Unsubscribe;
+    qa->depot_file = Action_Unsubscribe->data().toString();
+
+    QListWidgetItem* item = new QListWidgetItem("<unsubscribe> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_Download()
+{
+    // Get the destination file.
+
+    QString depot_file = Action_Download->data().toString();
+    QString file_name_only = depot_file.mid(depot_file.lastIndexOf('/') + 1);
+
+    QString save_to = QFileDialog::getExistingDirectory(this, "Save " + file_name_only + "To...");
+
+
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Download;
+    qa->depot_file = depot_file;
+    qa->relevant_file = save_to + "/" + file_name_only;
+
+    QListWidgetItem* item = new QListWidgetItem("<download> " + qa->depot_file + " to " + qa->relevant_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_Sync()
+{
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Sync;
+    qa->depot_file = Action_Sync->data().toString();
+
+    QListWidgetItem* item = new QListWidgetItem("<sync> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::Context_ForceSync()
+{
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_ForceSync;
+    qa->depot_file = Action_ForceSync->data().toString();
+
+    QListWidgetItem* item = new QListWidgetItem("<force sync> " + qa->depot_file);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::on_btnRunQueue_clicked()
+{
+    //
+    // We go over every entry in the queue list and send it to the background
+    // thread to run.
+    //
+    QMetaObject::invokeMethod(Tunnel, "RunQueue");
+    ui->lstQueue->clear();
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::on_btnOpenP4_clicked()
+{
+    QProcess p;
+//    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+//    env.insert("P4USER", PerforceUser);
+//    env.insert("P4CLIENT", PerforceClientspec);
+//    env.insert("P4PORT", "localhost:1234");
+//    p.setProcessEnvironment(env);
+    QStringList args;
+    args << "-q" << "-u" << PerforceUser << "-p" << "localhost:1234" << "-c" << PerforceClientspec;
+    p.startDetached("c:/Perforce/P4win.exe", args);
+}
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::ShowContextMenu(const QPoint &point)
@@ -350,60 +1001,97 @@ void MainWindow::ShowContextMenu(const QPoint &point)
 
     QString const& selected_depot_file = ui->treeWidget->selectedItems().at(0)->data(0, Qt::UserRole).toString();
 
-    qDebug() << selected_depot_file;
-
     if (selected_depot_file.length() == 0)
         return; // directory.
 
-    QMenu contextMenu(tr("Context menu"), this);
 
     FileEntry const& entry = FileMap->operator [](selected_depot_file);
 
-    if (entry.subscribed)
+    if (entry.open_by_another)
+        return; // can't do anything _at all_
+
+    QPoint global_point = ui->treeWidget->mapToGlobal(point);
+    global_point.ry() += 20; // mapToGlobal doesn't account for the header, apparently.
+
+    QMenu contextMenu(tr("Context menu"), this);
+
+    if (entry.exists_in_depot == false)
     {
-        if (entry.head_revision == entry.local_revision)
-        {
-            if (entry.open_by_another == false) // can't do anything if locked.
-            {
-                // open for add shouldn't be in the list on the left.
-                Q_ASSERT(entry.open_for_add == false);
+        // If its not in the depot - we can delete the local file
+        // or we can add it to the depot.
+        Action_AddToDepot->setData(selected_depot_file);
+        contextMenu.addAction(Action_AddToDepot);
 
-                if (entry.open_for_edit == false)
-                {
-                    Action_Edit->setData(selected_depot_file);
-                    contextMenu.addAction(Action_Edit);
-                }
-                else
-                {
-                    Action_Revert->setData(selected_depot_file);
-                    contextMenu.addAction(Action_Revert);
-                }
-            }
-        }
-        else
-        {
-            // don't have latest - offer sync.
-        }
+        Action_DeleteDisc->setData(selected_depot_file);
+        contextMenu.addAction(Action_DeleteDisc);
 
-        QAction action3("Unsubscribe", this);
-        connect(&action3, SIGNAL(triggered()), this, SLOT(TestAction()));
-        contextMenu.addAction(&action3);
+        contextMenu.exec(global_point);
+        return;
+    }
+
+    if (entry.local_revision == 0)
+    {
+        // not subscribed - can subscribe or download
+        Action_Subscribe->setData(selected_depot_file);
+        contextMenu.addAction(Action_Subscribe);
+
+        Action_Download->setData(selected_depot_file);
+        contextMenu.addAction(Action_Download);
+
+        contextMenu.exec(global_point);
+        return;
+    }
+
+    // at this point its subscribed, but maybe out of date or edited
+    if (entry.open_for_edit)
+    {
+        // if we already have it open, we can revert.
+        Action_Revert->setData(selected_depot_file);
+        contextMenu.addAction(Action_Revert);
+
+        contextMenu.exec(global_point);
+        return;
+    }
+
+    if (entry.head_revision != entry.local_revision)
+    {
+        // can sync or unsubscribe
+        Action_Sync->setData(selected_depot_file);
+        contextMenu.addAction(Action_Sync);
+        Action_Unsubscribe->setData(selected_depot_file);
+        contextMenu.addAction(Action_Unsubscribe);
     }
     else
     {
-        QAction action2("Subscribe", this);
-        connect(&action2, SIGNAL(triggered()), this, SLOT(TestAction()));
-        contextMenu.addAction(&action2);
+        // can edit or unsubscribe
+        Action_Edit->setData(selected_depot_file);
+        contextMenu.addAction(Action_Edit);
+        Action_Unsubscribe->setData(selected_depot_file);
+        contextMenu.addAction(Action_Unsubscribe);
+        contextMenu.addSeparator();
+        Action_ForceSync->setData(selected_depot_file);
+        contextMenu.addAction(Action_ForceSync);
+
+        contextMenu.addSeparator();
+        Action_DeleteDepot->setData(selected_depot_file);
+        contextMenu.addAction(Action_DeleteDepot);
     }
 
-    contextMenu.exec(ui->treeWidget->mapToGlobal(point));
+
+    contextMenu.exec(global_point);
+    return;
 }
 
+static QHash<QString, QTreeWidgetItem*> folder_nodes;
+static QHash<QString, QTreeWidgetItem*> file_nodes;
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow),
     file_list_thunker(this),
-    FileMap(0)
+    FileMap(nullptr)
 {
     ui->setupUi(this);
 
@@ -411,6 +1099,22 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(Action_Edit, SIGNAL(triggered()), this, SLOT(Context_Edit()));
     Action_Revert = new QAction("Revert", this);
     connect(Action_Revert, SIGNAL(triggered()), this, SLOT(Context_Revert()));
+    Action_AddToDepot = new QAction("Add To Depot", this);
+    connect(Action_AddToDepot, SIGNAL(triggered()), this, SLOT(Context_AddToDepot()));
+    Action_DeleteDisc = new QAction("Delete", this);
+    connect(Action_DeleteDisc, SIGNAL(triggered()), this, SLOT(Context_DeleteDisc()));
+    Action_DeleteDepot = new QAction("Delete", this);
+    connect(Action_DeleteDepot, SIGNAL(triggered()), this, SLOT(Context_DeleteDepot()));
+    Action_Subscribe = new QAction("Subscribe", this);
+    connect(Action_Subscribe, SIGNAL(triggered()), this, SLOT(Context_Subscribe()));
+    Action_Unsubscribe = new QAction("Unsubscribe", this);
+    connect(Action_Unsubscribe, SIGNAL(triggered()), this, SLOT(Context_Unsubscribe()));
+    Action_Download = new QAction("Download", this);
+    connect(Action_Download, SIGNAL(triggered()), this, SLOT(Context_Download()));
+    Action_Sync = new QAction("Sync", this);
+    connect(Action_Sync, SIGNAL(triggered()), this, SLOT(Context_Sync()));
+    Action_ForceSync = new QAction("Force Sync", this);
+    connect(Action_ForceSync, SIGNAL(triggered()), this, SLOT(Context_ForceSync()));
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "Midnight Oil Games", "P4SSHQt");
 
@@ -446,9 +1150,6 @@ MainWindow::MainWindow(QWidget *parent) :
     Tunnel = new SSHTunnel(&file_list_thunker);
     Tunnel->moveToThread(&TunnelThread);
 
-    qDebug() << Tunnel->thread();
-    qDebug() << Tunnel->P.thread();
-
     connect(&TunnelThread, &QThread::finished, Tunnel, &QObject::deleteLater);
     //connect(this, &MainWindow::launch, Tunnel, &SSHTunnel::thread_fn);
     TunnelThread.start();
@@ -460,9 +1161,66 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->splitter->setChildrenCollapsible(false);
     ui->centralWidget->setLayout(mainLayout);
 
+    QStringList headers;
+    headers << "File" << "Revision" << "State";
+    ui->treeWidget->setHeaderLabels(headers);
+
     ui->treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui->treeWidget, SIGNAL(customContextMenuRequested(const QPoint &)),
             this, SLOT(ShowContextMenu(const QPoint &)));
+
+    connect(ui->lineEdit, SIGNAL(textEdited(const QString&)), this, SLOT(filter_changed(const QString&)));
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::filter_changed(const QString &text)
+{
+    {
+        QHash<QString, QTreeWidgetItem*>::iterator it = folder_nodes.begin();
+        for (; it != folder_nodes.end(); ++it)
+        {
+            it.value()->setData(0, Qt::UserRole + 1, false);
+        }
+    }
+
+    {
+        QHash<QString, QTreeWidgetItem*>::iterator it = file_nodes.begin();
+        for (; it != file_nodes.end(); ++it)
+        {
+            // if we pass the filter we are visible.
+            if (text.length() == 0 ||
+                it.key().contains(text, Qt::CaseInsensitive) == true)
+            {
+                it.value()->setHidden(false);
+
+                // set the crumb for all our parents.
+                QTreeWidgetItem* parent = it.value()->parent();
+                while (parent)
+                {
+                    parent->setData(0, Qt::UserRole + 1, true);
+                    parent = parent->parent();
+                }
+            }
+            else
+                it.value()->setHidden(true);
+        }
+    }
+
+    {
+        // hide any folders not in use.
+        QHash<QString, QTreeWidgetItem*>::iterator it = folder_nodes.begin();
+        for (; it != folder_nodes.end(); ++it)
+        {
+            if (it.value()->data(0, Qt::UserRole + 1).toBool() == false)
+            {
+                it.value()->setHidden(true);
+            }
+            else
+                it.value()->setHidden(false);
+        }
+    }
+
 
 }
 
@@ -474,6 +1232,8 @@ void FileListThunk::RefreshUIThunk(void* new_file_list)
     thunk_to->RefreshUI(file_list);
 }
 
+
+
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
@@ -484,19 +1244,31 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
     //
     ui->treeWidget->clear();
     ui->lstEdited->clear();
+    folder_nodes.clear();
+    file_nodes.clear();
 
     if (FileMap)
         delete FileMap;
     FileMap = 0;
     FileMap = NewFileMap;
 
-    QHash<QString, QTreeWidgetItem*> tree;
     QFileIconProvider icons;
-    QTreeWidgetItem* root = new QTreeWidgetItem((QTreeWidget*)0, QStringList(QString("depot")));
-    root->setIcon(0, icons.icon(QFileIconProvider::Folder));
+    QIcon FolderIcon = icons.icon(QFileIconProvider::Folder);
+    QIcon FileIcon = icons.icon(QFileIconProvider::File);
+
+    QHash<QString, QTreeWidgetItem*> tree;
+    QTreeWidgetItem* root = new QTreeWidgetItem((QTreeWidget*)0, QStringList(QString("steph")));
+    root->setIcon(0, FolderIcon);
+
+    folder_nodes.insert("steph", root);
+
     ui->treeWidget->insertTopLevelItem(0, root);
+    root->setExpanded(true);
 
     int out_of_date_count = 0;
+
+    QBrush gray_brush(Qt::gray);
+    QBrush red_brush(Qt::red);
 
     QMap<QString, FileEntry>::const_iterator it = FileMap->constBegin();
     for (; it != FileMap->constEnd(); ++it)
@@ -504,31 +1276,20 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
         FileEntry const& entry = it.value();
         QString const& file = it.value().depot_file;
 
-        if (entry.subscribed)
-        {
-            if (entry.local_revision != entry.head_revision)
-            {
-                // This file is out of date.
-                out_of_date_count++;
-            }
+        bool subscribed = false;
+        if (entry.local_revision != 0)
+            subscribed = true;
 
-            if (entry.open_for_add)
-            {
-                ui->lstEdited->addItem("(add) " + entry.depot_file);
-            }
-            if (entry.open_for_edit)
-                ui->lstEdited->addItem("(edit) " + entry.depot_file);
-        }
-
-
-        // we can have non-depot files it things need to be added.
-        if (file.length() == 0)
-            continue;
+        bool out_of_date = subscribed && entry.head_revision != entry.local_revision;
+        if (out_of_date)
+            out_of_date_count++;
 
         QStringList sections = file.split("/");
         // the last entry is the filename
         QString accumulator;
-        for (int i = 0; i < sections.size(); i++)
+
+        // skip the first entry (don't need "steph" since we did it above)
+        for (int i = 1; i < sections.size(); i++)
         {
             // find the tree entry for the path.
             QString current;
@@ -538,19 +1299,63 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
                 current = sections[i];
 
             QHash<QString, QTreeWidgetItem*>::iterator parent_it = tree.find(current);
-            QTreeWidgetItem* parent = 0;
+            QTreeWidgetItem* parent = nullptr;
             if (parent_it == tree.end())
             {
                 // need to create the node.
                 QTreeWidgetItem* parent_parent = root;
                 if (accumulator.size())
                     parent_parent = tree[accumulator];
-                parent = new QTreeWidgetItem(parent_parent, QStringList(sections[i]));
+                QStringList cols(sections[i]);
                 if (i == sections.length()-1)
                 {
+                    // set up the columns.
+                    if (entry.exists_in_depot)
+                        cols << (QString::number(entry.local_revision) + "/" + QString::number(entry.head_revision));
+                    else
+                        cols << "-";
+
+                    if (entry.open_for_edit)
+                    {
+                        QListWidgetItem* item = new QListWidgetItem(entry.depot_file);
+                        ui->lstEdited->addItem(item);
+                        cols << "Editing";
+                    }
+                    else if (entry.open_by_another)
+                        cols << "Edited by another";
+                }
+                parent = new QTreeWidgetItem(parent_parent, cols);
+                if (i == sections.length()-1)
+                {
+                    parent->setIcon(0, FileIcon);
+
                     // this is the file level - set the file path in the data
                     parent->setData(0, Qt::UserRole, file);
+
+                    parent->setTextAlignment(1, Qt::AlignHCenter);
+                    parent->setTextAlignment(2, Qt::AlignHCenter);
+
+                    // if the file isn't in the depot, its a gray text
+                    if (entry.exists_in_depot == false)
+                        parent->setForeground(0, gray_brush);
+
+                    // if the file can't be edited until something is reconciled,
+                    // its red.
+                    if (subscribed && (out_of_date || entry.open_by_another))
+                        parent->setForeground(0, red_brush);
+
+                    qDebug() << "file: " << file;
+                    file_nodes.insert(file, parent);
                 }
+                else
+                {
+                    qDebug() << "folder: " << accumulator;
+
+                    folder_nodes.insert(accumulator, parent);
+                    parent->setExpanded(true);
+                    parent->setIcon(0, FolderIcon);
+                }
+
                 tree[current] = parent;
 
             }
@@ -566,8 +1371,15 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
     else if (out_of_date_count == 1)
         ui->lblOutOfDate->setText("1 file out of date.");
     else
-        ui->lblOutOfDate->setText(out_of_date_count + " files out of date.");
+        ui->lblOutOfDate->setText(QString(out_of_date_count) + " files out of date.");
 
+    if (ui->lstEdited->count() == 0)
+        ui->btnCommitSelected->setEnabled(false);
+    else
+    {
+        ui->btnCommitSelected->setEnabled(true);
+        ui->btnCommitSelected->setText("Commit All");
+    }
 }
 
 MainWindow::~MainWindow()
@@ -601,51 +1413,77 @@ void MainWindow::closeEvent(QCloseEvent *)
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void MainWindow::on_btnConnect_clicked()
+void MainWindow::on_btnRefresh_clicked()
 {
-    QMetaObject::invokeMethod(Tunnel, "retrieve_files");
+    QMetaObject::invokeMethod(Tunnel, "retrieve_files", Q_ARG(bool, true));
 }
 
+////-----------------------------------------------------------------------------
+////-----------------------------------------------------------------------------
+//void MainWindow::on_btnRevertSelected_clicked()
+//{
+//    QList<QListWidgetItem *> items = ui->lstEdited->selectedItems();
+//    if (items.length() == 0)
+//        return;
+
+//    QMessageBox msgBox;
+//    msgBox.setText("This will erase changes!");
+//    msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+//    msgBox.setDefaultButton(QMessageBox::Cancel);
+//    int ret = msgBox.exec();
+//    if (ret != QMessageBox::Ok)
+//        return;
+
+//    QStringList* depot_files = new QStringList();
+//    for (int i = 0; i < items.length(); i++)
+//    {
+//        QString file_text = items.at(i)->text();
+//        file_text = file_text.mid(file_text.indexOf(' ') + 1);
+//        depot_files->push_back(file_text);
+//    }
+
+//    QMetaObject::invokeMethod(Tunnel, "RevertFiles", Q_ARG(void*, depot_files));
+//}
+
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void MainWindow::on_btnRevertSelected_clicked()
+void MainWindow::on_lstEdited_itemSelectionChanged()
 {
-    QList<QListWidgetItem *> items = ui->lstEdited->selectedItems();
-    if (items.length() == 0)
-        return;
-
-    QMessageBox msgBox;
-    msgBox.setText("This will erase changes!");
-    msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
-    msgBox.setDefaultButton(QMessageBox::Cancel);
-    int ret = msgBox.exec();
-    if (ret != QMessageBox::Ok)
-        return;
-
-    QStringList* depot_files = new QStringList();
-    for (int i = 0; i < items.length(); i++)
-    {
-        QString file_text = items.at(i)->text();
-        file_text = file_text.mid(file_text.indexOf(' ') + 1);
-        depot_files->push_back(file_text);
-    }
-
-    QMetaObject::invokeMethod(Tunnel, "RevertFiles", Q_ARG(void*, depot_files));
+    int count = ui->lstEdited->selectedItems().length();
+    if (count == 0)
+        ui->btnCommitSelected->setText("Commit All");
+    else
+        ui->btnCommitSelected->setText("Commit Selected");
 }
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::on_btnCommitSelected_clicked()
 {
+    if (ui->lstEdited->count() == 0)
+        return; // nothing to commit.
+
     QList<QListWidgetItem *> items = ui->lstEdited->selectedItems();
     if (items.length() == 0)
+    {
+        for (int i = 0; i < ui->lstEdited->count(); i++)
+            items.push_back(ui->lstEdited->item(i));
+    }
+
+    QStringList depot_files;
+    for (int i = 0; i < items.length(); i++)
+    {
+        QString file_text = items.at(i)->text();
+        depot_files.push_back(file_text);
+    }
+
+    SubmitDialog testdialog(depot_files, this);
+    testdialog.exec();
+
+    if (testdialog.result() != QDialog::Accepted)
         return;
 
-    bool ok = false;
-    QString commit_message = QInputDialog::getText(this, "Commit Message", "Description:", QLineEdit::Normal, "", &ok);
-    if (ok == false)
-        return;
-
+    QString commit_message = testdialog.commit_msg_edit->toPlainText();
     if (commit_message.length() == 0)
     {
         QMessageBox msgBox;
@@ -655,18 +1493,39 @@ void MainWindow::on_btnCommitSelected_clicked()
         return;
     }
 
-    QStringList* depot_files = new QStringList();
-    for (int i = 0; i < items.length(); i++)
-    {
-        QString file_text = items.at(i)->text();
-        file_text = file_text.mid(file_text.indexOf(' ') + 1);
-        depot_files->push_back(file_text);
-    }
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_Commit;
+    qa->relevant_file = commit_message;
+    qa->commit_files = depot_files;
 
-    QMetaObject::invokeMethod(Tunnel, "SubmitFiles", Q_ARG(void*, depot_files), Q_ARG(QString, commit_message));
+    QString ui_text = "<commit> ";
+    if (depot_files.length() == 1)
+        ui_text += depot_files[0];
+    else
+        ui_text += QString::number(depot_files.length()) + " files";
+
+    QListWidgetItem* item = new QListWidgetItem(ui_text);
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
 }
 
-void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int column)
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::on_btnGetLatest_clicked()
+{
+    QueuedAction* qa = new QueuedAction();
+    qa->action = QA_GetLatest;
+
+    QListWidgetItem* item = new QListWidgetItem("<get latest>");
+    ui->lstQueue->addItem(item);
+
+    queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int)
 {
     QString file_name = item->data(0, Qt::UserRole).toString();
 
@@ -678,4 +1537,39 @@ void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int colu
 
     // send to the background thread to process.
     QMetaObject::invokeMethod(Tunnel, "download_file_to", Q_ARG(QString, file_name), Q_ARG(QString, save_to));
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+SubmitDialog::SubmitDialog(const QStringList &SubmitFiles, QWidget *parent)
+{
+    QLabel* list_label = new QLabel;
+    list_label->setText("Submitting Files");
+    QPlainTextEdit* file_list = new QPlainTextEdit;
+    QString submit_text;
+    foreach (const QString& file, SubmitFiles)
+    {
+        submit_text += file;
+        submit_text += "\n";
+    }
+    file_list->setPlainText(submit_text);
+    file_list->setEnabled(false);
+
+    QLabel* edit_label = new QLabel;
+    edit_label->setText("Change Description");
+    commit_msg_edit = new QPlainTextEdit;
+
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok
+                                     | QDialogButtonBox::Cancel);
+
+    connect(buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout;
+    mainLayout->addWidget(list_label);
+    mainLayout->addWidget(file_list);
+    mainLayout->addWidget(edit_label);
+    mainLayout->addWidget(commit_msg_edit);
+    mainLayout->addWidget(buttonBox);
+    setLayout(mainLayout);
 }
