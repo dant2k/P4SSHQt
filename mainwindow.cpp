@@ -12,9 +12,11 @@
 #include "qmessagebox.h"
 #include "qplaintextedit.h"
 #include "qdialogbuttonbox.h"
+#include "qdesktopservices.h"
 
-working
+//working
 /*
+ * -- Need to handle incorrect password better... currently kinda silently fails.
  * -- need to get the listbox columns sizing so we can see the entire filename, or just
  *      put everything in one column.
  * -- need version history.
@@ -1140,10 +1142,12 @@ MainWindow::MainWindow(QWidget *parent) :
         PerforceRoot = settings.value("Perforce/Root", "perforce_root").toString();
 
         // Normally this will be done via dialog, however for the moment..
-        PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
+        //PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
+
     }
 
-    //PerforcePassword = QInputDialog::getText(this, "Perforce Password", "Password:", QLineEdit::Password);
+    if (PerforcePassword.length() == 0)
+        PerforcePassword = QInputDialog::getText(this, "Perforce Password", "Password:", QLineEdit::Password);
 
     qDebug() << "Creating SSH Tunnel";
 
@@ -1168,6 +1172,7 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui->treeWidget, SIGNAL(customContextMenuRequested(const QPoint &)),
             this, SLOT(ShowContextMenu(const QPoint &)));
+
 
     connect(ui->lineEdit, SIGNAL(textEdited(const QString&)), this, SLOT(filter_changed(const QString&)));
 }
@@ -1532,11 +1537,24 @@ void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int)
     if (file_name.length() == 0)
         return; // not an actual file.
 
-    // got a file, ask where to put it.
-    QString save_to = QFileDialog::getExistingDirectory(this, "Save To..");
+    //
+    // If we have a copy of he file (ie are subscribed), then we open the file
+    // via the associated application.
+    //
+    FileEntry const& entry = FileMap->operator [](file_name);
+    if (entry.exists_in_depot &&
+        entry.local_revision != 0)
+    {
+        QDesktopServices::openUrl(QDir::fromNativeSeparators(entry.local_file));
+    }
+    else
+    {
+        // got a file, ask where to put it.
+        QString save_to = QFileDialog::getExistingDirectory(this, "Save To..");
 
-    // send to the background thread to process.
-    QMetaObject::invokeMethod(Tunnel, "download_file_to", Q_ARG(QString, file_name), Q_ARG(QString, save_to));
+        // send to the background thread to process.
+        QMetaObject::invokeMethod(Tunnel, "download_file_to", Q_ARG(QString, file_name), Q_ARG(QString, save_to));
+    }
 }
 
 //-----------------------------------------------------------------------------
