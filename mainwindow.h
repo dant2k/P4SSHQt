@@ -151,6 +151,7 @@ private:
     QAction* Action_Download;
     QAction* Action_Sync;
     QAction* Action_ForceSync;
+    QAction* Action_ShowInExplorer;
 
     virtual void closeEvent(QCloseEvent *event);
 
@@ -179,6 +180,7 @@ public slots:
     void Context_Download();
     void Context_Sync();
     void Context_ForceSync();
+    void Context_ShowInExplorer();
 };
 
 #endif // MAINWINDOW_H

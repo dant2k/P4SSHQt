@@ -29,7 +29,8 @@
  * -- need to delete the changelist on a failed submission.
  * -- need commands on an entire folder.
  * -- need delete from disc for files that are new.
- * -- need to open folder for a file.
+ * ++ need to open folder for a file.
+ *      This works on windows, just need to do the bit for OSX once I'm on my laptop.
  * ++ try to find a way to open associated program for an edited file?
  *      Now can double click on a file to open the associated program - if the file is
  *      subscribed.
@@ -959,6 +960,31 @@ void MainWindow::Context_Sync()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
+void MainWindow::Context_ShowInExplorer()
+{
+#ifdef Q_OS_MAC
+    QStringList args;
+    args << "-e";
+    args << "tell application \"Finder\"";
+    args << "-e";
+    args << "activate";
+    args << "-e";
+    args << "select POSIX file \""+filePath+"\"";
+    args << "-e";
+    args << "end tell";
+    QProcess::startDetached("osascript", args);
+12
+#endif
+#ifdef Q_OS_WIN32
+    QString command = "explorer /select," + QDir::toNativeSeparators(PerforceRoot) + QDir::separator() + QDir::toNativeSeparators(Action_ShowInExplorer->data().toString());
+    qDebug() << command;
+    QProcess::startDetached(command);
+#endif
+
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void MainWindow::Context_ForceSync()
 {
     QueuedAction* qa = new QueuedAction();
@@ -1027,6 +1053,10 @@ void MainWindow::ShowContextMenu(const QPoint &point)
         Action_AddToDepot->setData(selected_depot_file);
         contextMenu.addAction(Action_AddToDepot);
 
+        Action_ShowInExplorer->setData(selected_depot_file);
+        contextMenu.addAction(Action_ShowInExplorer);
+
+        contextMenu.addSeparator();
         Action_DeleteDisc->setData(selected_depot_file);
         contextMenu.addAction(Action_DeleteDisc);
 
@@ -1054,6 +1084,9 @@ void MainWindow::ShowContextMenu(const QPoint &point)
         Action_Revert->setData(selected_depot_file);
         contextMenu.addAction(Action_Revert);
 
+        Action_ShowInExplorer->setData(selected_depot_file);
+        contextMenu.addAction(Action_ShowInExplorer);
+
         contextMenu.exec(global_point);
         return;
     }
@@ -1065,6 +1098,8 @@ void MainWindow::ShowContextMenu(const QPoint &point)
         contextMenu.addAction(Action_Sync);
         Action_Unsubscribe->setData(selected_depot_file);
         contextMenu.addAction(Action_Unsubscribe);
+        Action_ShowInExplorer->setData(selected_depot_file);
+        contextMenu.addAction(Action_ShowInExplorer);
     }
     else
     {
@@ -1076,6 +1111,8 @@ void MainWindow::ShowContextMenu(const QPoint &point)
         contextMenu.addSeparator();
         Action_ForceSync->setData(selected_depot_file);
         contextMenu.addAction(Action_ForceSync);
+        Action_ShowInExplorer->setData(selected_depot_file);
+        contextMenu.addAction(Action_ShowInExplorer);
 
         contextMenu.addSeparator();
         Action_DeleteDepot->setData(selected_depot_file);
@@ -1120,6 +1157,12 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(Action_Sync, SIGNAL(triggered()), this, SLOT(Context_Sync()));
     Action_ForceSync = new QAction("Force Sync", this);
     connect(Action_ForceSync, SIGNAL(triggered()), this, SLOT(Context_ForceSync()));
+#ifdef Q_OS_MAC
+    Action_ShowInExplorer = new QAction("Show In Finder", this);
+#else
+    Action_ShowInExplorer = new QAction("Show In Explorer", this);
+#endif
+    connect(Action_ShowInExplorer, SIGNAL(triggered()), this, SLOT(Context_ShowInExplorer()));
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "Midnight Oil Games", "P4SSHQt");
 
@@ -1145,7 +1188,7 @@ MainWindow::MainWindow(QWidget *parent) :
         PerforceRoot = settings.value("Perforce/Root", "perforce_root").toString();
 
         // Normally this will be done via dialog, however for the moment..
-        //PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
+        PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
 
     }
 
