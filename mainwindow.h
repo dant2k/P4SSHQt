@@ -153,6 +153,8 @@ private:
     QAction* Action_ForceSync;
     QAction* Action_ShowInExplorer;
 
+    QAction* Action_RemoveFromQueue;
+
     virtual void closeEvent(QCloseEvent *event);
 
 public slots:
@@ -181,6 +183,10 @@ public slots:
     void Context_Sync();
     void Context_ForceSync();
     void Context_ShowInExplorer();
+
+    void ShowQueueContextMenu(const QPoint& point);
+
+    void Context_RemoveFromQueue();
 };
 
 #endif // MAINWINDOW_H

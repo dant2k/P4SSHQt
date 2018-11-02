@@ -41,7 +41,8 @@
  *      and kills the tunnel to try and avoid shitlets.
  * -- check for the port being open on connection instead of waiting forever - the pause on
  *      open actually sucks.
- * -- need to be able to edit the queue after I add something in case its wrong.
+ * ++ need to be able to edit the queue after I add something in case its wrong.
+ *      can now delete items in the queue.
  * */
 
 // This is the SSH user to use for the tunnel.
@@ -1036,6 +1037,14 @@ void MainWindow::Context_ForceSync()
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
+void MainWindow::Context_RemoveFromQueue()
+{
+    int index_to_remove = Action_RemoveFromQueue->data().toInt();
+    queued_actions.remove(index_to_remove);
+    delete ui->lstQueue->item(index_to_remove);
+}
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void MainWindow::on_btnRunQueue_clicked()
 {
     //
@@ -1060,6 +1069,23 @@ void MainWindow::on_btnOpenP4_clicked()
     args << "-q" << "-u" << PerforceUser << "-p" << "localhost:1234" << "-c" << PerforceClientspec;
     p.startDetached("c:/Perforce/P4win.exe", args);
 }
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::ShowQueueContextMenu(const QPoint& point)
+{
+    if (ui->lstQueue->selectedItems().length() == 0)
+        return;
+
+    QPoint global_point = ui->lstQueue->mapToGlobal(point);
+
+    QMenu contextMenu(tr("Context menu"), this);
+
+    Action_RemoveFromQueue->setData(ui->lstQueue->row(ui->lstQueue->selectedItems()[0]));
+    contextMenu.addAction(Action_RemoveFromQueue);
+    contextMenu.exec(global_point);
+}
+
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::ShowContextMenu(const QPoint &point)
@@ -1174,6 +1200,9 @@ MainWindow::MainWindow(QWidget *parent) :
 {
     ui->setupUi(this);
 
+    //
+    // Actions for the treeview
+    //
     Action_Edit = new QAction("Edit", this);
     connect(Action_Edit, SIGNAL(triggered()), this, SLOT(Context_Edit()));
     Action_Revert = new QAction("Revert", this);
@@ -1200,6 +1229,12 @@ MainWindow::MainWindow(QWidget *parent) :
     Action_ShowInExplorer = new QAction("Show In Explorer", this);
 #endif
     connect(Action_ShowInExplorer, SIGNAL(triggered()), this, SLOT(Context_ShowInExplorer()));
+
+    //
+    // Actions for the queue list
+    //
+    Action_RemoveFromQueue = new QAction("Remove", this);
+    connect(Action_RemoveFromQueue, SIGNAL(triggered()), this, SLOT(Context_RemoveFromQueue()));
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "Midnight Oil Games", "P4SSHQt");
 
@@ -1260,6 +1295,10 @@ MainWindow::MainWindow(QWidget *parent) :
     ui->treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui->treeWidget, SIGNAL(customContextMenuRequested(const QPoint &)),
             this, SLOT(ShowContextMenu(const QPoint &)));
+
+    ui->lstQueue->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->lstQueue, SIGNAL(customContextMenuRequested(const QPoint &)),
+            this, SLOT(ShowQueueContextMenu(const QPoint &)));
 
 
     connect(ui->lineEdit, SIGNAL(textEdited(const QString&)), this, SLOT(filter_changed(const QString&)));
