@@ -24,7 +24,8 @@
  * -- need partial queue process on failure
  * -- not sure if I should even have queues to be honest. Seems pointless? Just make sure things
  *      run in the background.
- * -- need to test adding a new folder
+ * ++ need to test adding a new folder
+ *      this works on windows, also tested spaces in filenames.
  * -- adding file descriptions.
  * -- need to delete the changelist on a failed submission.
  * -- need commands on an entire folder.
