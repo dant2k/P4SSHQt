@@ -716,48 +716,70 @@ void SSHTunnel::RunQueue()
         {
             if (validate_submit(files, queued_actions[i]->commit_files))
             {
-                QString std_input_file_list;
-                std_input_file_list += "-d\n";
-                std_input_file_list += queued_actions[i]->relevant_file;
-                std_input_file_list += "\n";
+                // the changelist desc needs a space before each line.
+                QStringList desc_each_line = queued_actions[i]->relevant_file.split('\n');
+                QString change_desc = "Change: new\nDescription: ";
+                for (int i = 0; i < desc_each_line.size(); i++)
+                {
+                    change_desc += desc_each_line[i] + "\n";
+                    if (i < desc_each_line.size() - 1)
+                        change_desc += "\t";
+                }
+                change_desc += "Files:";
 
                 foreach (QString const& str, queued_actions[i]->commit_files)
                 {
-                    std_input_file_list += "//depot/" + str + "\n";
+                    change_desc += "\t//depot/" + str + "\n";
                 }
 
-                args << "-x" << "-" << "submit";
-                if (run_perforce_command(args, std_input_file_list, server_files))
+                args << "change" << "-i";
+                QStringList results;
+                if (run_perforce_command(args, change_desc, results))
                 {
-                    // submit succeeded - so we got a new revision, which we have,
-                    // and it isn't edited anymore.
-                    foreach (QString const& str, queued_actions[i]->commit_files)
+                    // get the changelist ID.
+                    if (results.length())
                     {
-                        files[str].head_revision++;
-                        files[str].local_revision++;
-                        files[str].open_for_edit = false;
+                        QString parse = results.at(0);
+                        parse = parse.mid(7);
+                        parse = parse.left(parse.indexOf(' '));
+                        qDebug() << "Using Change: " << parse;
+
+                        args.clear();
+                        args << "submit" << "-c" << parse;
+                        if (run_perforce_command(args, QString(), server_files))
+                        {
+                            qDebug() << "Done";
+                            // submit succeeded - so we got a new revision, which we have,
+                            // and it isn't edited anymore.
+                            foreach (QString const& str, queued_actions[i]->commit_files)
+                            {
+                                files[str].head_revision++;
+                                files[str].local_revision++;
+                                files[str].open_for_edit = false;
+                            }
+                        }
+                        else
+                        {
+                            // If the submit failed, then all of our files are now in
+                            // a random changelist, when we want them in the default
+                            // changelist.
+
+                            QString std_input_file_list = "-c\n";
+                            std_input_file_list += "default\n";
+
+                            foreach (QString const& str, queued_actions[i]->commit_files)
+                            {
+                                std_input_file_list += "//depot/" + str + "\n";
+                            }
+
+                            args.clear();
+                            args << "-x" << "-" << "reopen";
+                            run_perforce_command(args, std_input_file_list, server_files);
+
+                            // \todo delete the empty changelist... get it from teh output
+                            // from the fail?
+                        }
                     }
-                }
-                else
-                {
-                    // If the submit failed, then all of our files are now in
-                    // a random changelist, when we want them in the default
-                    // changelist.
-
-                    std_input_file_list = "-c\n";
-                    std_input_file_list += "default\n";
-
-                    foreach (QString const& str, queued_actions[i]->commit_files)
-                    {
-                        std_input_file_list += "//depot/" + str + "\n";
-                    }
-
-                    args.clear();
-                    args << "-x" << "-" << "reopen";
-                    run_perforce_command(args, std_input_file_list, server_files);
-
-                    // \todo delete the empty changelist... get it from teh output
-                    // from the fail?
                 }
             }
             break;
