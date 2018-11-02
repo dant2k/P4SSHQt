@@ -29,7 +29,8 @@
  * -- adding file descriptions.
  * -- need to delete the changelist on a failed submission.
  * -- need commands on an entire folder.
- * -- need delete from disc for files that are new.
+ * ++ need delete from disc for files that are new.
+ *      Now works
  * ++ need to open folder for a file.
  *      This works on windows, just need to do the bit for OSX once I'm on my laptop.
  * ++ try to find a way to open associated program for an edited file?
@@ -40,6 +41,7 @@
  *      and kills the tunnel to try and avoid shitlets.
  * -- check for the port being open on connection instead of waiting forever - the pause on
  *      open actually sucks.
+ * -- need to be able to edit the queue after I add something in case its wrong.
  * */
 
 // This is the SSH user to use for the tunnel.
@@ -891,7 +893,42 @@ void MainWindow::Context_DeleteDepot()
 //-----------------------------------------------------------------------------
 void MainWindow::Context_DeleteDisc()
 {
-    //QMetaObject::invokeMethod(Tunnel, "RevertFile", Q_ARG(QString, Action_Revert->data().toString()));
+    QMessageBox msgBox;
+    msgBox.setText("Permanently Delete?");
+    msgBox.setInformativeText("This file will be *permanently* deleted, as it has NOT been added to Perforce.\n\n" + Action_DeleteDisc->data().toString());
+    msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    msgBox.setDefaultButton(QMessageBox::Cancel);
+    int ret = msgBox.exec();
+
+    if (ret != QMessageBox::Ok)
+        return;
+
+    QString file_string =  PerforceRoot + QDir::separator() + Action_DeleteDisc->data().toString();
+    qDebug() << file_string;
+    QFile file_on_disc(file_string);
+    if (file_on_disc.remove() == false)
+    {
+        QMessageBox errBox;
+        errBox.setText("Failed");
+        errBox.setInformativeText("Failed to delete! Check and make sure the file isn't open in any application.");
+        errBox.setStandardButtons(QMessageBox::Ok);
+        errBox.exec();
+        return;
+    }
+
+    // Need to update the UI -- so we'll hijack the refresh from the other thread by
+    // duplicating the map on the foreground thread and pretending we did something
+    // on the background thread.
+
+    // This is apparently how you deep copy a map in QT.
+    QMap<QString, FileEntry>* file_map = new QMap<QString, FileEntry>;
+    *file_map = *FileMap;
+    file_map->detach();
+
+    // Remove the file we just deleted.
+    file_map->remove(Action_DeleteDisc->data().toString());
+    RefreshUI(file_map);
+
 }
 
 //-----------------------------------------------------------------------------
@@ -978,7 +1015,6 @@ void MainWindow::Context_ShowInExplorer()
 #endif
 #ifdef Q_OS_WIN32
     QString command = "explorer /select," + QDir::toNativeSeparators(PerforceRoot) + QDir::separator() + QDir::toNativeSeparators(Action_ShowInExplorer->data().toString());
-    qDebug() << command;
     QProcess::startDetached(command);
 #endif
 
@@ -1109,11 +1145,11 @@ void MainWindow::ShowContextMenu(const QPoint &point)
         contextMenu.addAction(Action_Edit);
         Action_Unsubscribe->setData(selected_depot_file);
         contextMenu.addAction(Action_Unsubscribe);
+        Action_ShowInExplorer->setData(selected_depot_file);
+        contextMenu.addAction(Action_ShowInExplorer);
         contextMenu.addSeparator();
         Action_ForceSync->setData(selected_depot_file);
         contextMenu.addAction(Action_ForceSync);
-        Action_ShowInExplorer->setData(selected_depot_file);
-        contextMenu.addAction(Action_ShowInExplorer);
 
         contextMenu.addSeparator();
         Action_DeleteDepot->setData(selected_depot_file);
@@ -1144,9 +1180,9 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(Action_Revert, SIGNAL(triggered()), this, SLOT(Context_Revert()));
     Action_AddToDepot = new QAction("Add To Depot", this);
     connect(Action_AddToDepot, SIGNAL(triggered()), this, SLOT(Context_AddToDepot()));
-    Action_DeleteDisc = new QAction("Delete", this);
+    Action_DeleteDisc = new QAction("Delete Off Disc", this);
     connect(Action_DeleteDisc, SIGNAL(triggered()), this, SLOT(Context_DeleteDisc()));
-    Action_DeleteDepot = new QAction("Delete", this);
+    Action_DeleteDepot = new QAction("Delete From Depot", this);
     connect(Action_DeleteDepot, SIGNAL(triggered()), this, SLOT(Context_DeleteDepot()));
     Action_Subscribe = new QAction("Subscribe", this);
     connect(Action_Subscribe, SIGNAL(triggered()), this, SLOT(Context_Subscribe()));
