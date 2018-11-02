@@ -64,10 +64,10 @@
          <bool>false</bool>
         </property>
         <property name="columnCount">
-         <number>1</number>
+         <number>3</number>
         </property>
         <attribute name="headerVisible">
-         <bool>false</bool>
+         <bool>true</bool>
         </attribute>
         <attribute name="headerStretchLastSection">
          <bool>true</bool>
@@ -75,6 +75,16 @@
         <column>
          <property name="text">
           <string notr="true">1</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string notr="true">2</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string notr="true">3</string>
          </property>
         </column>
        </widget>

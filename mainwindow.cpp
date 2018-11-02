@@ -17,8 +17,9 @@
 //working
 /*
  * -- Need to handle incorrect password better... currently kinda silently fails.
- * -- need to get the listbox columns sizing so we can see the entire filename, or just
+ * ++ need to get the listbox columns sizing so we can see the entire filename, or just
  *      put everything in one column.
+ *      Fixed - last two columns are fixed pixel width!
  * -- need version history.
  * -- need partial queue process on failure
  * -- not sure if I should even have queues to be honest. Seems pointless? Just make sure things
@@ -29,7 +30,9 @@
  * -- need commands on an entire folder.
  * -- need delete from disc for files that are new.
  * -- need to open folder for a file.
- * -- try to find a way to open associated program for an edited file?
+ * ++ try to find a way to open associated program for an edited file?
+ *      Now can double click on a file to open the associated program - if the file is
+ *      subscribed.
  * -- add a "reconcile changes?"
  * -- write a wrapper program for plink and ssh that just monitors for the parent process dying
  *      and kills the tunnel to try and avoid shitlets.
@@ -1168,7 +1171,12 @@ MainWindow::MainWindow(QWidget *parent) :
     QStringList headers;
     headers << "File" << "Revision" << "State";
     ui->treeWidget->setHeaderLabels(headers);
-
+    ui->treeWidget->header()->setSectionResizeMode(2, QHeaderView::Fixed);
+    ui->treeWidget->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+    ui->treeWidget->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    ui->treeWidget->header()->setStretchLastSection(false);
+    ui->treeWidget->header()->resizeSection(2, 60);
+    ui->treeWidget->header()->resizeSection(1, 60);
     ui->treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui->treeWidget, SIGNAL(customContextMenuRequested(const QPoint &)),
             this, SLOT(ShowContextMenu(const QPoint &)));
