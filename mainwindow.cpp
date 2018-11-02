@@ -26,7 +26,8 @@
  *      run in the background.
  * ++ need to test adding a new folder
  *      this works on windows, also tested spaces in filenames.
- * -- adding file descriptions.
+ * ++ adding file descriptions.
+ *      adding a file now you can add the changelist description.
  * -- need to delete the changelist on a failed submission.
  * -- need commands on an entire folder.
  * ++ need delete from disc for files that are new.
@@ -782,7 +783,7 @@ void SSHTunnel::RunQueue()
                 // add the file to the changelist
                 // submit the changelist.
                 args << "change" << "-i";
-                QString changelist = "Change: new\nDescription: Adding File\n";
+                QString changelist = "Change: new\nDescription: " + queued_actions[i]->relevant_file + "\n";
                 QStringList results;
                 if (run_perforce_command(args, changelist, results))
                 {
@@ -866,9 +867,18 @@ void MainWindow::Context_Revert()
 //-----------------------------------------------------------------------------
 void MainWindow::Context_AddToDepot()
 {
+    bool ok = false;
+    QString add_desc = QInputDialog::getText(this, "File Description", "Description:", QLineEdit::Normal, "Adding File.", &ok);
+    if (ok == false)
+        return;
+
+    if (add_desc.length() == 0)
+        add_desc = "Adding File.";
+
     QueuedAction* qa = new QueuedAction();
     qa->action = QA_Add;
     qa->depot_file = Action_AddToDepot->data().toString();
+    qa->relevant_file = add_desc;
 
     QListWidgetItem* item = new QListWidgetItem("<add> " + qa->depot_file);
     ui->lstQueue->addItem(item);
