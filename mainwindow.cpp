@@ -1226,7 +1226,6 @@ void MainWindow::ShowContextMenu(const QPoint &point)
             path = current->text(0) + path;
             current = current->parent();
         }
-        path += QString(QDir::separator()) + ".";
         Action_ShowInExplorer->setData(path);
         contextMenu.addAction(Action_ShowInExplorer);
         contextMenu.exec(global_point);
