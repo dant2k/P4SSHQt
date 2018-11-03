@@ -36,7 +36,7 @@ struct FileEntry
 
     // state of the file in the depot.
     bool open_for_edit;
-    bool open_by_another;
+    QString open_by_another;
 
     bool exists_in_depot;
 
@@ -45,7 +45,6 @@ struct FileEntry
         exists_in_depot = false;
         head_revision = 0;
         local_revision = 0;
-        open_by_another = false;
         open_for_edit = false;
     }
 };
