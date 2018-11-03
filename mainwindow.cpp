@@ -1108,11 +1108,10 @@ void MainWindow::Context_ShowInExplorer()
     args << "-e";
     args << "activate";
     args << "-e";
-    args << "select POSIX file \""+filePath+"\"";
+    args << "select POSIX file \"" + QDir::toNativeSeparators(PerforceRoot) + QDir::separator() + QDir::toNativeSeparators(Action_ShowInExplorer->data().toString()) + "\"";
     args << "-e";
     args << "end tell";
     QProcess::startDetached("osascript", args);
-12
 #endif
 #ifdef Q_OS_WIN32
     QString command = "explorer /select," + QDir::toNativeSeparators(PerforceRoot) + QDir::separator() + QDir::toNativeSeparators(Action_ShowInExplorer->data().toString());
