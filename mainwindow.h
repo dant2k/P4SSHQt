@@ -9,6 +9,7 @@
 #include <qtreewidget.h>
 #include <qdialog.h>
 #include <qplaintextedit.h>
+#include <QListWidget>
 
 namespace Ui {
 class MainWindow;
@@ -171,6 +172,7 @@ public slots:
     void on_btnOpenP4_clicked();
 
     void on_treeWidget_itemDoubleClicked(QTreeWidgetItem* item, int column);
+    void on_lstEdited_itemDoubleClicked(QListWidgetItem* item);
 
     void on_lstEdited_itemSelectionChanged();
 
@@ -193,6 +195,9 @@ public slots:
     void ShowQueueContextMenu(const QPoint& point);
 
     void Context_RemoveFromQueue();
+
+    void ShowEditedContextMenu(const QPoint& point);
+
 };
 
 #endif // MAINWINDOW_H

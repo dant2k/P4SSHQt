@@ -1147,6 +1147,24 @@ void MainWindow::on_btnOpenP4_clicked()
     p.startDetached("c:/Perforce/P4win.exe", args);
 }
 
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::ShowEditedContextMenu(const QPoint& point)
+{
+    if (ui->lstEdited->selectedItems().length() == 0)
+        return;
+
+    QPoint global_point = ui->lstEdited->mapToGlobal(point);
+
+    QMenu contextMenu(tr("Context menu"), this);
+
+    Action_Revert->setData(ui->lstEdited->selectedItems()[0]->text());
+    contextMenu.addAction(Action_Revert);
+    contextMenu.exec(global_point);
+
+}
+
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::ShowQueueContextMenu(const QPoint& point)
@@ -1182,7 +1200,6 @@ void MainWindow::ShowContextMenu(const QPoint &point)
         return; // can't do anything _at all_
 
     QPoint global_point = ui->treeWidget->mapToGlobal(point);
-    global_point.ry() += 20; // mapToGlobal doesn't account for the header, apparently.
 
     QMenu contextMenu(tr("Context menu"), this);
 
@@ -1406,6 +1423,10 @@ MainWindow::MainWindow(QWidget *parent) :
       SIGNAL(selectionChanged(const QItemSelection &, const QItemSelection &)),
       SLOT(TreeSelectionChanged(const QItemSelection &, const QItemSelection &))
      );
+
+    ui->lstEdited->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->lstEdited, SIGNAL(customContextMenuRequested(const QPoint &)),
+            this, SLOT(ShowEditedContextMenu(const QPoint &)));
 
     connect(ui->lineEdit, SIGNAL(textEdited(const QString&)), this, SLOT(filter_changed(const QString&)));
 }
@@ -1684,33 +1705,6 @@ void MainWindow::on_btnRefresh_clicked()
     QMetaObject::invokeMethod(Tunnel, "retrieve_files", Q_ARG(bool, true));
 }
 
-////-----------------------------------------------------------------------------
-////-----------------------------------------------------------------------------
-//void MainWindow::on_btnRevertSelected_clicked()
-//{
-//    QList<QListWidgetItem *> items = ui->lstEdited->selectedItems();
-//    if (items.length() == 0)
-//        return;
-
-//    QMessageBox msgBox;
-//    msgBox.setText("This will erase changes!");
-//    msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
-//    msgBox.setDefaultButton(QMessageBox::Cancel);
-//    int ret = msgBox.exec();
-//    if (ret != QMessageBox::Ok)
-//        return;
-
-//    QStringList* depot_files = new QStringList();
-//    for (int i = 0; i < items.length(); i++)
-//    {
-//        QString file_text = items.at(i)->text();
-//        file_text = file_text.mid(file_text.indexOf(' ') + 1);
-//        depot_files->push_back(file_text);
-//    }
-
-//    QMetaObject::invokeMethod(Tunnel, "RevertFiles", Q_ARG(void*, depot_files));
-//}
-
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
 void MainWindow::on_lstEdited_itemSelectionChanged()
@@ -1787,6 +1781,15 @@ void MainWindow::on_btnGetLatest_clicked()
     ui->lstQueue->addItem(item);
 
     queued_actions.push_back(qa);
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::on_lstEdited_itemDoubleClicked(QListWidgetItem* item)
+{
+    QString file_name = item->text();
+    FileEntry const& entry = FileMap->operator [](file_name);
+    QDesktopServices::openUrl(QDir::fromNativeSeparators(entry.local_file));
 }
 
 //-----------------------------------------------------------------------------

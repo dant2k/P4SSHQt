@@ -54,7 +54,7 @@
       <item row="2" column="0" colspan="2">
        <widget class="QLabel" name="lblOutOfDate">
         <property name="text">
-         <string>4 files out of date</string>
+         <string>&lt;needs refresh&gt;</string>
         </property>
        </widget>
       </item>
