@@ -1336,7 +1336,8 @@ MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow),
     file_list_thunker(this),
-    FileMap(nullptr)
+    FileMap(nullptr),
+    ServerChanges(nullptr)
 {
     ui->setupUi(this);
 
