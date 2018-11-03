@@ -1828,7 +1828,7 @@ void MainWindow::on_lstEdited_itemDoubleClicked(QListWidgetItem* item)
 {
     QString file_name = item->text();
     FileEntry const& entry = FileMap->operator [](file_name);
-    QDesktopServices::openUrl(QDir::fromNativeSeparators(entry.local_file));
+    QDesktopServices::openUrl(QUrl("file://" + QDir::fromNativeSeparators(entry.local_file)));
 }
 
 //-----------------------------------------------------------------------------
@@ -1848,7 +1848,7 @@ void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int)
     if (entry.exists_in_depot &&
         entry.local_revision != 0)
     {
-        QDesktopServices::openUrl(QDir::fromNativeSeparators(entry.local_file));
+        QDesktopServices::openUrl(QUrl("file://" + QDir::fromNativeSeparators(entry.local_file)));
     }
     else
     {
