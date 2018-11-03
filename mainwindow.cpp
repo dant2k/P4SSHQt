@@ -16,7 +16,6 @@
 
 //working
 /*
- * -- Need to handle incorrect password better... currently kinda silently fails.
  * -- need partial queue process on failure
  * -- not sure if I should even have queues to be honest. Seems pointless? Just make sure things
  *      run in the background.
@@ -28,6 +27,8 @@
  * -- check for the port being open on connection instead of waiting forever - the pause on
  *      open actually sucks.
  *
+ * ++ Need to handle incorrect password better... currently kinda silently fails.
+ *      Now asks again. Doesn't requeue the last operation, but fine for now.
  * ++ need to get the listbox columns sizing so we can see the entire filename, or just
  *      put everything in one column.
  *      Fixed - last two columns are fixed pixel width!
@@ -76,6 +77,8 @@ static QString PerforceClientspec;
 // This is the path we set as the root in perforce.
 static QString PerforceRoot;
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 SSHTunnel::SSHTunnel(FileListThunk* _thunk) : P(this), thunk(_thunk)
 {
     retrying = false;
@@ -84,7 +87,8 @@ SSHTunnel::SSHTunnel(FileListThunk* _thunk) : P(this), thunk(_thunk)
     connect(&P, &QProcess::readyReadStandardOutput, this, &SSHTunnel::echo_std);
     connect(&P, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &SSHTunnel::tunnel_closed);
 }
-
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void SSHTunnel::tunnel_closed(int, QProcess::ExitStatus)
 {
     qDebug() << "SSL Tunnel Closed";
@@ -189,6 +193,15 @@ bool SSHTunnel::run_perforce_command(QStringList command_and_args, QString const
     if (error.contains("please login again") ||
         error.contains("invalid or unset"))
     {
+        if (PerforcePassword.length() == 0)
+            return false; // no password to try, just bail. It means they cancelled out.
+
+        if (retrying == true)
+        {
+            // Password incorrect - post a msg to the foreground.
+            QMetaObject::invokeMethod(thunk, "BadPasswordThunk");
+            return false;
+        }
         qDebug() << "Login expired.";
 
         //
@@ -236,6 +249,8 @@ bool SSHTunnel::run_perforce_command(QStringList command_and_args, QString const
     return false;
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 QMap<QString, FileEntry>* SSHTunnel::retrieve_files(bool post_to_foreground)
 {
     QMap<QString, FileEntry>* file_map = new QMap<QString, FileEntry>;
@@ -372,6 +387,8 @@ QMap<QString, FileEntry>* SSHTunnel::retrieve_files(bool post_to_foreground)
     return file_map;
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void SSHTunnel::shutdown_tunnel()
 {
     // This shutdowns the SSH tunnel if connected.
@@ -381,6 +398,8 @@ void SSHTunnel::shutdown_tunnel()
     qDebug() << "...Done";
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void SSHTunnel::shutdown_fn()
 {
     qDebug() << "Shutting Down";
@@ -391,11 +410,15 @@ void SSHTunnel::shutdown_fn()
     thread()->quit();
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void SSHTunnel::echo_err()
 {
     qDebug() << "ssh err>" << QString(P.readAllStandardError());
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void SSHTunnel::echo_std()
 {
     qDebug() << "ssh out>" << QString(P.readAllStandardOutput());
@@ -1378,8 +1401,7 @@ MainWindow::MainWindow(QWidget *parent) :
         PerforceRoot = settings.value("Perforce/Root", "perforce_root").toString();
 
         // Normally this will be done via dialog, however for the moment..
-        PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
-
+        //PerforcePassword = settings.value("Perforce/Pass", "perforce_pass").toString();
     }
 
     if (PerforcePassword.length() == 0)
@@ -1494,6 +1516,13 @@ void FileListThunk::RefreshUIThunk(void* new_file_list, void* new_server_changes
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
+void FileListThunk::BadPasswordThunk()
+{
+    thunk_to->BadPassword();
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void FileListThunk::PostFileHistoryThunk(QString file, void* file_history)
 {
     QStringList* changes = (QStringList*)file_history;
@@ -1510,6 +1539,13 @@ void MainWindow::PostFileHistory(QString file, QStringList* history)
         ui->lstHistory->addItem(str);
     }
     delete history;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::BadPassword()
+{
+    PerforcePassword = QInputDialog::getText(this, "Perforce Password", "Previous password incorrect, enter again:", QLineEdit::Password);
 }
 
 //-----------------------------------------------------------------------------
@@ -1669,13 +1705,16 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap, QStringList* Ne
     }
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 MainWindow::~MainWindow()
 {
     delete ui;
     delete FileMap;
 }
 
-
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void MainWindow::closeEvent(QCloseEvent *)
 {
     // This has to be here because on OSX we get this twice

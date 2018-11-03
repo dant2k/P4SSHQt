@@ -72,6 +72,7 @@ private:
 public slots:
     void RefreshUIThunk(void* new_file_list, void* new_server_changes);
     void PostFileHistoryThunk(QString file, void* file_history);
+    void BadPasswordThunk();
 };
 
 //-----------------------------------------------------------------------------
@@ -134,6 +135,7 @@ public:
 
     void RefreshUI(QMap<QString, FileEntry>* NewFileMap, QStringList* NewServerChanges);
     void PostFileHistory(QString file, QStringList* history);
+    void BadPassword();
 
 private:
     Ui::MainWindow *ui;
