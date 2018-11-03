@@ -69,7 +69,8 @@ private:
     class MainWindow* thunk_to;
 
 public slots:
-    void RefreshUIThunk(void* new_file_list);
+    void RefreshUIThunk(void* new_file_list, void* new_server_changes);
+    void PostFileHistoryThunk(QString file, void* file_history);
 };
 
 //-----------------------------------------------------------------------------
@@ -100,6 +101,8 @@ public slots:
     QMap<QString, FileEntry>* retrieve_files(bool post_to_foreground);
     void download_file_to(QString depot_file, QString dest_dir);
 
+    void get_file_history(QString depot_file);
+
     void RunQueue();
 };
 
@@ -110,7 +113,7 @@ class SubmitDialog : public QDialog
     Q_OBJECT
 
 public:
-    explicit SubmitDialog(const QStringList& SubmitFiles, QWidget* parent = 0);
+    explicit SubmitDialog(const QStringList& SubmitFiles, QWidget* parent = nullptr);
 
     QPlainTextEdit* commit_msg_edit;
 
@@ -123,13 +126,13 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = 0);
+    explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
     QProcess tunnel_process;
 
-    void RefreshUI(QMap<QString, FileEntry>* NewFileMap);
-
+    void RefreshUI(QMap<QString, FileEntry>* NewFileMap, QStringList* NewServerChanges);
+    void PostFileHistory(QString file, QStringList* history);
 
 private:
     Ui::MainWindow *ui;
@@ -140,6 +143,7 @@ private:
     QThread TunnelThread;
 
     QMap<QString, FileEntry>* FileMap;
+    QStringList* ServerChanges;
 
     QAction* Action_Edit;
     QAction* Action_Revert;
@@ -169,6 +173,8 @@ public slots:
     void on_treeWidget_itemDoubleClicked(QTreeWidgetItem* item, int column);
 
     void on_lstEdited_itemSelectionChanged();
+
+    void TreeSelectionChanged(const QItemSelection &, const QItemSelection &);
 
     void ShowContextMenu(const QPoint& point);
 

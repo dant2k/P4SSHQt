@@ -17,19 +17,26 @@
 //working
 /*
  * -- Need to handle incorrect password better... currently kinda silently fails.
- * ++ need to get the listbox columns sizing so we can see the entire filename, or just
- *      put everything in one column.
- *      Fixed - last two columns are fixed pixel width!
- * -- need version history.
  * -- need partial queue process on failure
  * -- not sure if I should even have queues to be honest. Seems pointless? Just make sure things
  *      run in the background.
+ * -- need to delete the changelist on a failed submission.
+ * -- need commands on an entire folder.
+ * -- add a "reconcile changes?"
+ * -- write a wrapper program for plink and ssh that just monitors for the parent process dying
+ *      and kills the tunnel to try and avoid shitlets.
+ * -- check for the port being open on connection instead of waiting forever - the pause on
+ *      open actually sucks.
+ *
+ * ++ need to get the listbox columns sizing so we can see the entire filename, or just
+ *      put everything in one column.
+ *      Fixed - last two columns are fixed pixel width!
+ * ++ need version history.
+ *      Version history added! can't do details yet tho...
  * ++ need to test adding a new folder
  *      this works on windows, also tested spaces in filenames.
  * ++ adding file descriptions.
  *      adding a file now you can add the changelist description.
- * -- need to delete the changelist on a failed submission.
- * -- need commands on an entire folder.
  * ++ need delete from disc for files that are new.
  *      Now works
  * ++ need to open folder for a file.
@@ -37,11 +44,6 @@
  * ++ try to find a way to open associated program for an edited file?
  *      Now can double click on a file to open the associated program - if the file is
  *      subscribed.
- * -- add a "reconcile changes?"
- * -- write a wrapper program for plink and ssh that just monitors for the parent process dying
- *      and kills the tunnel to try and avoid shitlets.
- * -- check for the port being open on connection instead of waiting forever - the pause on
- *      open actually sucks.
  * ++ need to be able to edit the queue after I add something in case its wrong.
  *      can now delete items in the queue.
  * */
@@ -88,6 +90,8 @@ void SSHTunnel::tunnel_closed(int, QProcess::ExitStatus)
     qDebug() << "SSL Tunnel Closed";
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void SSHTunnel::run_ssh()
 {
     QStringList list;
@@ -104,6 +108,8 @@ void SSHTunnel::run_ssh()
     QThread::sleep(2);
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
 void SSHTunnel::download_file_to(QString depot_file, QString dest_dir)
 {
     if (P.processId() == 0)
@@ -118,6 +124,25 @@ void SSHTunnel::download_file_to(QString depot_file, QString dest_dir)
 
     files.start(PerforcePath, list);
     files.waitForFinished();
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void SSHTunnel::get_file_history(QString depot_file)
+{
+    if (P.processId() == 0)
+        return;
+
+    QStringList args;
+    args << "filelog" << ("//depot/" + depot_file);
+
+    QStringList* output = new QStringList();
+    if (run_perforce_command(args, QString(), *output))
+    {
+        QMetaObject::invokeMethod(thunk, "PostFileHistoryThunk", Q_ARG(QString, depot_file), Q_ARG(void*, output));
+    }
+    else
+        delete output;
 }
 
 //-----------------------------------------------------------------------------
@@ -214,6 +239,14 @@ bool SSHTunnel::run_perforce_command(QStringList command_and_args, QString const
 QMap<QString, FileEntry>* SSHTunnel::retrieve_files(bool post_to_foreground)
 {
     QMap<QString, FileEntry>* file_map = new QMap<QString, FileEntry>;
+
+    QStringList* server_changes = new QStringList();
+    {
+        QStringList args;
+        args << "changes" << "-s" << "submitted" << "-m" << "100";
+        if (run_perforce_command(args, QString(), *server_changes) == false)
+            return nullptr;
+    }
 
     QStringList server_files;
     {
@@ -332,8 +365,10 @@ QMap<QString, FileEntry>* SSHTunnel::retrieve_files(bool post_to_foreground)
     if (post_to_foreground)
     {
         // send this to the forground thread
-        QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, file_map));
+        QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, file_map), Q_ARG(void*, server_changes));
     }
+    else
+        delete server_changes;
     return file_map;
 }
 
@@ -845,8 +880,15 @@ void SSHTunnel::RunQueue()
     } // end for each action
     queued_actions.clear();
 
+    QStringList* server_changes = new QStringList();
+    {
+        QStringList args;
+        args << "changes" << "-s" << "submitted" << "-m" << "100";
+        run_perforce_command(args, QString(), *server_changes);
+    }
+
     // Send the updated files list to the UI.
-    QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, current_files));
+    QMetaObject::invokeMethod(thunk, "RefreshUIThunk", Q_ARG(void*, current_files), Q_ARG(void*, server_changes));
 }
 
 //-----------------------------------------------------------------------------
@@ -958,9 +1000,12 @@ void MainWindow::Context_DeleteDisc()
     *file_map = *FileMap;
     file_map->detach();
 
+    QStringList* changes = new QStringList();
+    *changes = *ServerChanges;
+
     // Remove the file we just deleted.
     file_map->remove(Action_DeleteDisc->data().toString());
-    RefreshUI(file_map);
+    RefreshUI(file_map, changes);
 
 }
 
@@ -1219,6 +1264,30 @@ void MainWindow::ShowContextMenu(const QPoint &point)
     return;
 }
 
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::TreeSelectionChanged(const QItemSelection & new_selection, const QItemSelection &)
+{
+    if (new_selection.length() == 0)
+        return; // I don't think there's a way to clear the selection, so just ignore?
+
+    QString const& selected_depot_file = new_selection.indexes().at(0).data(Qt::UserRole).toString();
+    if (selected_depot_file.length() == 0)
+    {
+        // if we select a directory show the repo history.
+        ui->lstHistory->clear();
+        foreach (QString const& str, *ServerChanges)
+        {
+            ui->lstHistory->addItem(str);
+        }
+        return;
+    }
+
+    // post to the background thread to grab the history for the selected file.
+    QMetaObject::invokeMethod(Tunnel, "get_file_history", Q_ARG(QString, selected_depot_file));
+
+}
+
 static QHash<QString, QTreeWidgetItem*> folder_nodes;
 static QHash<QString, QTreeWidgetItem*> file_nodes;
 
@@ -1270,7 +1339,7 @@ MainWindow::MainWindow(QWidget *parent) :
 
     QSettings settings(QSettings::IniFormat, QSettings::UserScope, "Midnight Oil Games", "P4SSHQt");
 
-    if (false)
+    if ((false))
     {
         // just for setting up the settings...
         settings.setValue("Tunnel/User", "tunnel_user");
@@ -1332,6 +1401,11 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->lstQueue, SIGNAL(customContextMenuRequested(const QPoint &)),
             this, SLOT(ShowQueueContextMenu(const QPoint &)));
 
+    connect(
+      ui->treeWidget->selectionModel(),
+      SIGNAL(selectionChanged(const QItemSelection &, const QItemSelection &)),
+      SLOT(TreeSelectionChanged(const QItemSelection &, const QItemSelection &))
+     );
 
     connect(ui->lineEdit, SIGNAL(textEdited(const QString&)), this, SLOT(filter_changed(const QString&)));
 }
@@ -1390,17 +1464,36 @@ void MainWindow::filter_changed(const QString &text)
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void FileListThunk::RefreshUIThunk(void* new_file_list)
+void FileListThunk::RefreshUIThunk(void* new_file_list, void* new_server_changes)
 {
     QMap<QString, FileEntry>* file_list = (QMap<QString, FileEntry>*)new_file_list;
-    thunk_to->RefreshUI(file_list);
+    QStringList* changes = (QStringList*)new_server_changes;
+    thunk_to->RefreshUI(file_list, changes);
 }
 
-
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void FileListThunk::PostFileHistoryThunk(QString file, void* file_history)
+{
+    QStringList* changes = (QStringList*)file_history;
+    thunk_to->PostFileHistory(file, changes);
+}
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
+void MainWindow::PostFileHistory(QString file, QStringList* history)
+{
+    ui->lstHistory->clear();
+    foreach (QString const& str, *history)
+    {
+        ui->lstHistory->addItem(str);
+    }
+    delete history;
+}
+
+//-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap, QStringList* NewServerChanges)
 {
     //
     // Update the UI tree for the depot.
@@ -1408,20 +1501,29 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap)
     //
     ui->treeWidget->clear();
     ui->lstEdited->clear();
+    ui->lstHistory->clear();
     folder_nodes.clear();
     file_nodes.clear();
 
+    if (ServerChanges)
+        delete ServerChanges;
+    ServerChanges = NewServerChanges;
+
     if (FileMap)
         delete FileMap;
-    FileMap = 0;
     FileMap = NewFileMap;
+
+    foreach (QString const& str, *ServerChanges)
+    {
+        ui->lstHistory->addItem(str);
+    }
 
     QFileIconProvider icons;
     QIcon FolderIcon = icons.icon(QFileIconProvider::Folder);
     QIcon FileIcon = icons.icon(QFileIconProvider::File);
 
     QHash<QString, QTreeWidgetItem*> tree;
-    QTreeWidgetItem* root = new QTreeWidgetItem((QTreeWidget*)0, QStringList(QString("steph")));
+    QTreeWidgetItem* root = new QTreeWidgetItem((QTreeWidget*)nullptr, QStringList(QString("steph")));
     root->setIcon(0, FolderIcon);
 
     folder_nodes.insert("steph", root);
@@ -1718,7 +1820,7 @@ void MainWindow::on_treeWidget_itemDoubleClicked(QTreeWidgetItem *item, int)
 
 //-----------------------------------------------------------------------------
 //-----------------------------------------------------------------------------
-SubmitDialog::SubmitDialog(const QStringList &SubmitFiles, QWidget *parent)
+SubmitDialog::SubmitDialog(const QStringList &SubmitFiles, QWidget*)
 {
     QLabel* list_label = new QLabel;
     list_label->setText("Submitting Files");
