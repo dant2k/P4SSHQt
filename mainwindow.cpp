@@ -266,7 +266,7 @@ QMap<QString, FileEntry>* SSHTunnel::retrieve_files(bool post_to_foreground)
     QStringList server_files;
     {
         QStringList args;
-        args << "fstat" << "-F" << "^headAction=delete" << "-T" << "depotFile,clientFile,headRev,haveRev,action,otherOpen" << "//depot/...";
+        args << "fstat" << "-F" << "^headAction=delete" << "-T" << "depotFile,clientFile,headRev,haveRev,action,otherOpen0" << "//depot/...";
         if (run_perforce_command(args, QString(), server_files) == false)
             return nullptr;
     }
@@ -316,10 +316,10 @@ QMap<QString, FileEntry>* SSHTunnel::retrieve_files(bool post_to_foreground)
                 revert_list << current_depot_file;
             }
         }
-        else if (server_files[i].startsWith("... otherOpen"))
+        else if (server_files[i].startsWith("... ... otherOpen0"))
         {
             // someone else has it open.
-            file_map->operator [](current_depot_file).open_by_another = true;
+            file_map->operator [](current_depot_file).open_by_another = server_files[i].mid(19);
         }
     }
 
@@ -459,7 +459,7 @@ static bool validate_edit(QMap<QString, FileEntry>& files, QString& file_to_edit
     FileEntry& entry = files[file_to_edit];
     if (entry.exists_in_depot == false)
         return false;
-    if (entry.open_by_another)
+    if (entry.open_by_another.length())
         return false;
     if (entry.local_revision != entry.head_revision)
         return false;
@@ -478,7 +478,7 @@ static bool validate_delete(QMap<QString, FileEntry>& files, QString& file_to_ed
     FileEntry& entry = files[file_to_edit];
     if (entry.exists_in_depot == false)
         return false;
-    if (entry.open_by_another)
+    if (entry.open_by_another.length())
         return false;
     if (entry.local_revision != entry.head_revision)
         return false;
@@ -595,7 +595,7 @@ static bool validate_submit(QMap<QString, FileEntry>& files, QStringList& files_
         if (entry.exists_in_depot == false ||
             entry.open_for_edit == false ||
             entry.local_revision != entry.head_revision ||
-            entry.open_by_another == true)
+            entry.open_by_another.length())
             return false;
     }
     return true;
@@ -1218,7 +1218,7 @@ void MainWindow::ShowContextMenu(const QPoint &point)
 
     FileEntry const& entry = FileMap->operator [](selected_depot_file);
 
-    if (entry.open_by_another)
+    if (entry.open_by_another.length())
         return; // can't do anything _at all_
 
     QPoint global_point = ui->treeWidget->mapToGlobal(point);
@@ -1591,7 +1591,8 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap, QStringList* Ne
     int out_of_date_count = 0;
 
     QBrush gray_brush(Qt::gray);
-    QBrush red_brush(Qt::red);
+    QBrush red_brush(QColor(255, 160, 160));
+    QBrush blue_brush(QColor(160, 160, 255));
 
     QMap<QString, FileEntry>::const_iterator it = FileMap->constBegin();
     for (; it != FileMap->constEnd(); ++it)
@@ -1644,8 +1645,8 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap, QStringList* Ne
                         ui->lstEdited->addItem(item);
                         cols << "Editing";
                     }
-                    else if (entry.open_by_another)
-                        cols << "Edited by another";
+                    else if (entry.open_by_another.length())
+                        cols << "Edited by " + entry.open_by_another;
                 }
                 parent = new QTreeWidgetItem(parent_parent, cols);
                 if (i == sections.length()-1)
@@ -1664,8 +1665,11 @@ void MainWindow::RefreshUI(QMap<QString, FileEntry>* NewFileMap, QStringList* Ne
 
                     // if the file can't be edited until something is reconciled,
                     // its red.
-                    if (subscribed && (out_of_date || entry.open_by_another))
+                    if (subscribed && (out_of_date || entry.open_by_another.length()))
                         parent->setForeground(0, red_brush);
+
+                    if (subscribed == false)
+                        parent->setForeground(0, blue_brush);
 
                     qDebug() << "file: " << file;
                     file_nodes.insert(file, parent);
