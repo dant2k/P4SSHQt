@@ -1210,20 +1210,33 @@ void MainWindow::ShowContextMenu(const QPoint &point)
     if (ui->treeWidget->selectedItems().length() == 0)
         return; // no menu if nothing selected
 
+    QPoint global_point = ui->treeWidget->mapToGlobal(point);
+    QMenu contextMenu(tr("Context menu"), this);
+
     QString const& selected_depot_file = ui->treeWidget->selectedItems().at(0)->data(0, Qt::UserRole).toString();
 
     if (selected_depot_file.length() == 0)
+    {
+        QString path;
+        QTreeWidgetItem* current = ui->treeWidget->selectedItems().at(0);
+        while (current)
+        {
+            if (path.length())
+                path = QDir::separator() + path;
+            path = current->text(0) + path;
+            current = current->parent();
+        }
+        path += QString(QDir::separator()) + ".";
+        Action_ShowInExplorer->setData(path);
+        contextMenu.addAction(Action_ShowInExplorer);
+        contextMenu.exec(global_point);
         return; // directory.
-
+    }
 
     FileEntry const& entry = FileMap->operator [](selected_depot_file);
 
     if (entry.open_by_another.length())
         return; // can't do anything _at all_
-
-    QPoint global_point = ui->treeWidget->mapToGlobal(point);
-
-    QMenu contextMenu(tr("Context menu"), this);
 
     if (entry.exists_in_depot == false)
     {
