@@ -26,6 +26,11 @@
  *      and kills the tunnel to try and avoid shitlets.
  * -- check for the port being open on connection instead of waiting forever - the pause on
  *      open actually sucks.
+ * -- blue instead of grey for new files
+ * -- canceling download still adds to queue
+ * -- double clicking edited file doesn't open viewer
+ * -- test deleting and edited file.
+ * -- test adding a file that you haven't subscribed to
  *
  * ++ Need to handle incorrect password better... currently kinda silently fails.
  *      Now asks again. Doesn't requeue the last operation, but fine for now.
