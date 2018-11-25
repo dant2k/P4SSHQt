@@ -1169,9 +1169,17 @@ void MainWindow::on_btnOpenP4_clicked()
 //    env.insert("P4CLIENT", PerforceClientspec);
 //    env.insert("P4PORT", "localhost:1234");
 //    p.setProcessEnvironment(env);
+#ifdef Q_OS_MAC
+    QStringList args;
+    args << "-p" << "localhost:1234" << "-c" << PerforceClientspec << "-u" << PerforceUser;
+    qDebug() << PerforcePath;
+    QProcess::startDetached("open /Applications/p4v.app --args -p localhost:1234 -c " + PerforceClientspec + " -u " + PerforceUser);
+#endif
+#ifdef Q_OS_WIN32
     QStringList args;
     args << "-q" << "-u" << PerforceUser << "-p" << "localhost:1234" << "-c" << PerforceClientspec;
     p.startDetached("c:/Perforce/P4win.exe", args);
+#endif
 }
 
 
