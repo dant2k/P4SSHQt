@@ -1,0 +1,7 @@
+If you get the rc missing error, you need to add the windows kit path
+to the build environment.
+
+This is in "Projects" tab, Build Settings, Build Environment. Then do a Batch Edit
+and add:
+Path=${PATH}C:\Program Files (x86)\Windows Kits\10\bin\10.0.17134.0\x64
+

@@ -16,6 +16,12 @@
 
 //working
 /*
+ *  (%AppData%\Midnigh Oil Games\P4SSHQt.ini)
+ *
+ * -- need to show when the key file isn't found, and have a UI for editing it. Overall the
+ *      connection state needs to actually be visible. It's only the log right now. Also
+ *      probably should have a shortcut for opening the config file. Hate having to hunt that down.
+ * -- need to show when plink isn't found.
  * -- need partial queue process on failure
  * -- not sure if I should even have queues to be honest. Seems pointless? Just make sure things
  *      run in the background.
@@ -106,7 +112,7 @@ void SSHTunnel::run_ssh()
     QStringList list;
     list << "-N" << "-L" << "1234:localhost:1666" << "-i" << TunnelKeyPathAndFile << (TunnelUser + "@" + TunnelServer);
 
-    qDebug() << "Running SSH";
+    qDebug() << "Running SSH" << list;
 
     P.start(PlinkPath, list);
     P.waitForStarted();
